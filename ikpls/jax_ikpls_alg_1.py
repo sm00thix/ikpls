@@ -11,7 +11,7 @@ E-mail: ole.e@di.ku.dk
 """
 
 from functools import partial
-from typing import Tuple
+from typing import Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -57,10 +57,12 @@ class PLS(PLSBase):
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
 
-    reverse_differentiable: bool, optional, default=False
+    differentiable: bool, optional, default=False
         Whether to make the implementation end-to-end differentiable. The
         differentiable version is slightly slower. Results among the two versions are
-        identical.
+        identical. If this is True, `fit` and `stateless_fit` will not issue a warning
+        if the residual goes below machine epsilon, and `max_stable_components` will
+        not be set.
 
     verbose : bool, optional, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
@@ -82,7 +84,7 @@ class PLS(PLSBase):
         scale_Y: bool = True,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
-        reverse_differentiable: bool = False,
+        differentiable: bool = False,
         verbose: bool = False,
     ) -> None:
         self.name = "Improved Kernel PLS Algorithm #1"
@@ -93,7 +95,7 @@ class PLS(PLSBase):
             scale_Y=scale_Y,
             copy=copy,
             dtype=dtype,
-            reverse_differentiable=reverse_differentiable,
+            differentiable=differentiable,
             verbose=verbose,
         )
         self.name += " #1"
@@ -148,7 +150,34 @@ class PLS(PLSBase):
         return B, W, P, Q, R, T
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step_1(self, X: jax.Array, Y: jax.Array) -> jax.Array:
+    def _get_sqrt_WX(self, X: jax.Array, weights: jax.Array) -> jax.Array:
+        """
+        Compute the product of the square root of the weights matrix and the predictor
+        matrix.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K)
+            Predictor variables.
+
+        weights : Array of shape (N,)
+            Weights for each observation.
+
+        Returns
+        -------
+        sqrt_WX : Array of shape (N, K)
+            Product of the square root of the weights matrix and the predictor matrix.
+        """
+        if self.verbose:
+            print(f"_get_sqrt_WX for {self.name} will be JIT compiled...")
+        weights = jnp.expand_dims(weights, axis=1)
+        sqrt_weights_mat = jnp.sqrt(weights)
+        return sqrt_weights_mat * X
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _step_1(
+        self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array]
+    ) -> jax.Array:
         """
         Perform the first step of Improved Kernel PLS Algorithm #1.
 
@@ -160,11 +189,20 @@ class PLS(PLSBase):
         Y : Array of shape (N, M)
             Response variables.
 
+        weights : Array of shape (N,) or None
+            Weights for each observation.
+
         Returns
         -------
         XTY : Array of shape (K, M)
             Intermediate result used in the PLS algorithm.
         """
+        if weights is not None:
+            if X.shape[1] < Y.shape[1]:
+                X = self._compute_AW(X, weights)
+            else:
+                Y = self._compute_AW(Y, weights)
+
         if self.verbose:
             print(f"_step_1 for {self.name} will be JIT compiled...")
         return self._compute_initial_XTY(X.T, Y)
@@ -223,7 +261,7 @@ class PLS(PLSBase):
         K: int,
         P: jax.Array,
         R: jax.Array,
-        reverse_differentiable: bool,
+        differentiable: bool,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Execute the main loop body of Improved Kernel PLS Algorithm #1. This function
@@ -255,8 +293,8 @@ class PLS(PLSBase):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
-        reverse_differentiable : bool
-            Whether to use a reverse_differentiable version of the algorithm.
+        differentiable : bool
+            Whether to use a differentiable version of the algorithm.
 
         Returns
         -------
@@ -289,9 +327,10 @@ class PLS(PLSBase):
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
         w, norm = self._step_2(XTY, M, K)
-        jax.debug.callback(self._weight_warning, (i, norm))
+        if not differentiable:
+            self._weight_warning_callback(i, norm)
         # step 3
-        if reverse_differentiable:
+        if differentiable:
             r = self._step_3(A, w, P, R)
         else:
             r = self._step_3(i, w, P, R)
@@ -301,7 +340,9 @@ class PLS(PLSBase):
         XTY = self._step_5(XTY, p, q, tTt)
         return XTY, w, p, q, r, t
 
-    def fit(self, X: ArrayLike, Y: ArrayLike, A: int) -> None:
+    def fit(
+        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Union[None, ArrayLike] = None
+    ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -316,8 +357,19 @@ class PLS(PLSBase):
         A : int
             Number of components in the PLS model.
 
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
         Attributes
         ----------
+        A: int
+            Number of components in the PLS model.
+
+        max_stable_components : int
+            Maximum number of components that can be used without the residual going
+            below machine epsilon. This is not set if `differentiable` is True.
+
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
 
@@ -337,16 +389,20 @@ class PLS(PLSBase):
             PLS scores matrix of X.
 
         X_mean : Array of shape (1, K) or None
-            Mean of X. If centering is not performed, this is None.
+            Mean of X. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
 
         Y_mean : Array of shape (1, M) or None
-            Mean of Y. If centering is not performed, this is None.
+            Mean of Y. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
 
         X_std : Array of shape (1, K) or None
             Sample standard deviation of X. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
 
         Y_std : Array of shape (1, M) or None
             Sample standard deviation of Y. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
 
         Returns
         -------
@@ -363,11 +419,15 @@ class PLS(PLSBase):
         stateless_fit : Performs the same operation but returns the output matrices
         instead of storing them in the class instance.
         """
+        self.A = A
+        if not self.differentiable:
+            self.max_stable_components = A
         self.B, W, P, Q, R, T, self.X_mean, self.Y_mean, self.X_std, self.Y_std = (
             self.stateless_fit(
                 X,
                 Y,
                 A,
+                weights,
                 self.center_X,
                 self.center_Y,
                 self.scale_X,
@@ -381,12 +441,13 @@ class PLS(PLSBase):
         self.R = R.T
         self.T = T.T
 
-    @partial(jax.jit, static_argnums=(0, 3, 4, 5, 6, 7, 8))
+    @partial(jax.jit, static_argnums=(0, 3, 5, 6, 7, 8, 9))
     def stateless_fit(
         self,
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
+        weights: Union[None, ArrayLike] = None,
         center_X: bool = True,
         center_Y: bool = True,
         scale_X: bool = True,
@@ -409,6 +470,10 @@ class PLS(PLSBase):
 
         A : int
             Number of components in the PLS model.
+
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
 
         center_X : bool, default=True
             Whether to center `X` before fitting by subtracting its row of
@@ -455,16 +520,20 @@ class PLS(PLSBase):
             PLS scores matrix of X.
 
         X_mean : Array of shape (1, K) or None
-            Mean of X. If centering is not performed, this is None.
+            Mean of X. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
 
         Y_mean : Array of shape (1, M) or None
-            Mean of Y. If centering is not performed, this is None.
+            Mean of Y. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
 
         X_std : Array of shape (1, K) or None
             Sample standard deviation of X. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
 
         Y_std : Array of shape (1, M) or None
             Sample standard deviation of Y. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
 
         Warns
         -----
@@ -486,9 +555,9 @@ class PLS(PLSBase):
         if self.verbose:
             print(f"stateless_fit for {self.name} will be JIT compiled...")
 
-        X, Y = self._initialize_input_matrices(X, Y)
+        X, Y, weights = self._initialize_input_matrices(X, Y, weights)
         X, Y, X_mean, Y_mean, X_std, Y_std = self._center_scale_input_matrices(
-            X, Y, center_X, center_Y, scale_X, scale_Y, copy
+            X, Y, weights, center_X, center_Y, scale_X, scale_Y, copy
         )
 
         # Get shapes
@@ -499,12 +568,15 @@ class PLS(PLSBase):
         B, W, P, Q, R, T = self._get_initial_matrices(A, K, M, N)
 
         # step 1
-        XTY = self._step_1(X, Y)
+        XTY = self._step_1(X, Y, weights)
+
+        if weights is not None:
+            X = self._get_sqrt_WX(X, weights)
 
         # steps 2-6
         for i in range(A):
             XTY, w, p, q, r, t = self._main_loop_body(
-                A, i, X, XTY, M, K, P, R, self.reverse_differentiable
+                A, i, X, XTY, M, K, P, R, self.differentiable
             )
             W = W.at[i].set(w.squeeze())
             P = P.at[i].set(p.squeeze())

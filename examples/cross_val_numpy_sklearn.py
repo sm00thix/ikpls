@@ -1,8 +1,8 @@
 """
 This file contains an example implementation of cross-validation using the NumPy
 implementations of IKPLS. It demonstrates how to perform cross-validation with
-column-wise centering and scaling. It also demonstrates metric computation and
-evaluation.
+sklearn's `cross_validate` column-wise centering and scaling. It also demonstrates
+metric computation and evaluation.
 
 The code includes the following functions:
 - `cv_splitter`: A function to generate indices to split data into training and
@@ -19,13 +19,12 @@ E-mail: ole.e@di.ku.dk
 """
 
 import numpy as np
-import numpy.typing as npt
 from sklearn.model_selection import cross_validate
 
 from ikpls.numpy_ikpls import PLS
 
 
-def cv_splitter(splits: npt.NDArray):
+def cv_splitter(splits: np.ndarray):
     """
     Generate indices to split data into training and validation sets.
     """
@@ -36,7 +35,7 @@ def cv_splitter(splits: npt.NDArray):
         yield train_idxs, val_idxs
 
 
-def mse_for_each_target(estimator, X, Y_true, **kwargs):
+def mse_for_each_target(estimator, X: np.ndarray, Y_true: np.ndarray, **kwargs) -> dict:
     """
     Compute the mean squared error for each target and the number of components that
     achieves the lowest MSE for each target.
