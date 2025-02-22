@@ -212,7 +212,7 @@ class PLS(PLSBase):
         q = (r.T @ XTY).T / tTt
         return tTt, p, q
 
-    @partial(jax.jit, static_argnums=(0, 1, 5, 6, 9))
+    @partial(jax.jit, static_argnums=(0, 1, 5, 6))
     def _main_loop_body(
         self,
         A: int,
@@ -223,7 +223,6 @@ class PLS(PLSBase):
         K: int,
         P: jax.Array,
         R: jax.Array,
-        differentiable: bool,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Execute the main loop body of Improved Kernel PLS Algorithm #2. This function
@@ -255,9 +254,6 @@ class PLS(PLSBase):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
-        differentiable : bool
-            Whether to use a differentiable version of the algorithm.
-
         Returns
         -------
         XTY : Array of shape (K, M)
@@ -279,10 +275,10 @@ class PLS(PLSBase):
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
         w, norm = self._step_2(XTY, M, K)
-        if not differentiable:
+        if not self.differentiable:
             self._weight_warning_callback(i, norm)
         # step 3
-        if differentiable:
+        if self.differentiable:
             r = self._step_3(A, w, P, R)
         else:
             r = self._step_3(i, w, P, R)
@@ -373,11 +369,6 @@ class PLS(PLSBase):
                 Y,
                 A,
                 weights,
-                self.center_X,
-                self.center_Y,
-                self.scale_X,
-                self.scale_Y,
-                self.copy,
             )
         )
         self.W = W.T
@@ -385,17 +376,13 @@ class PLS(PLSBase):
         self.Q = Q.T
         self.R = R.T
 
-    @partial(jax.jit, static_argnums=(0, 3, 5, 6, 7, 8, 9))
+    @partial(jax.jit, static_argnums=(0, 3))
     def stateless_fit(
         self,
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
         weights: Union[None, ArrayLike] = None,
-        center_X: bool = True,
-        center_Y: bool = True,
-        scale_X: bool = True,
-        scale_Y: bool = True,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -413,28 +400,6 @@ class PLS(PLSBase):
 
         A : int
             Number of components in the PLS model.
-
-        weights : Array of shape (N,) or None, optional, default=None
-            Weights for each observation. If None, then all observations are weighted
-            equally.
-
-        center_X : bool, default=True
-            Whether to center `X` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        center_Y : bool, default=True
-            Whether to center `Y` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        scale_X : bool, default=True
-            Whether to scale `X` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        scale_Y : bool, default=True
-            Whether to scale `Y` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
 
         Returns
         -------
@@ -486,7 +451,7 @@ class PLS(PLSBase):
 
         X, Y, weights = self._initialize_input_matrices(X, Y, weights)
         X, Y, X_mean, Y_mean, X_std, Y_std = self._center_scale_input_matrices(
-            X, Y, weights, center_X, center_Y, scale_X, scale_Y
+            X, Y, weights
         )
 
         # Get shapes
@@ -501,9 +466,7 @@ class PLS(PLSBase):
 
         # steps 2-6
         for i in range(A):
-            XTY, w, p, q, r = self._main_loop_body(
-                A, i, XTX, XTY, M, K, P, R, self.differentiable, self.dtype
-            )
+            XTY, w, p, q, r = self._main_loop_body(A, i, XTX, XTY, M, K, P, R)
             W = W.at[i].set(w.squeeze())
             P = P.at[i].set(p.squeeze())
             Q = Q.at[i].set(q.squeeze())

@@ -2703,10 +2703,13 @@ class TestClass:
         assert jnp.any(jnp.not_equal(grad_alg_2, zeros))
 
         # Check that we can not differentiate the JAX implementations using
-        # differentiable=True
+        # differentiable=False
         pls_alg_1 = JAX_Alg_1(differentiable=False, verbose=True)
         pls_alg_2 = JAX_Alg_2(differentiable=False, verbose=True)
-        msg = "IO callbacks do not support JVP."
+        msg = (
+            "Reverse-mode differentiation does not work for lax.while_loop or "
+            "lax.fori_loop with dynamic start/stop values"
+        )
         with pytest.raises(ValueError, match=msg):
             grad_fun = jax.value_and_grad(
                 preprocess_fit_rmse(jnp_X, jnp_Y, pls_alg_1, num_components), argnums=0

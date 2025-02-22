@@ -250,7 +250,7 @@ class PLS(PLSBase):
         q = (r.T @ XTY).T / tTt
         return tTt, p, q, t
 
-    @partial(jax.jit, static_argnums=(0, 1, 5, 6, 9))
+    @partial(jax.jit, static_argnums=(0, 1, 5, 6))
     def _main_loop_body(
         self,
         A: int,
@@ -424,11 +424,6 @@ class PLS(PLSBase):
                 Y,
                 A,
                 weights,
-                self.center_X,
-                self.center_Y,
-                self.scale_X,
-                self.scale_Y,
-                self.copy,
             )
         )
         self.W = W.T
@@ -437,18 +432,13 @@ class PLS(PLSBase):
         self.R = R.T
         self.T = T.T
 
-    @partial(jax.jit, static_argnums=(0, 3, 5, 6, 7, 8, 9))
+    @partial(jax.jit, static_argnums=(0, 3))
     def stateless_fit(
         self,
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
         weights: Union[None, ArrayLike] = None,
-        center_X: bool = True,
-        center_Y: bool = True,
-        scale_X: bool = True,
-        scale_Y: bool = True,
-        copy: bool = True,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -470,30 +460,6 @@ class PLS(PLSBase):
         weights : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
-
-        center_X : bool, default=True
-            Whether to center `X` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        center_Y : bool, default=True
-            Whether to center `Y` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        scale_X : bool, default=True
-            Whether to scale `X` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        scale_Y : bool, default=True
-            Whether to scale `Y` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        copy : bool, optional, default=True
-            Whether to copy `X` and `Y` in fit before potentially applying centering
-            and scaling. If True, then the data is copied before fitting. If False, and
-            `dtype` matches the type of `X` and `Y`, then centering and scaling is done
-            inplace, modifying both arrays.
 
         Returns
         -------
@@ -553,7 +519,7 @@ class PLS(PLSBase):
 
         X, Y, weights = self._initialize_input_matrices(X, Y, weights)
         X, Y, X_mean, Y_mean, X_std, Y_std = self._center_scale_input_matrices(
-            X, Y, weights, center_X, center_Y, scale_X, scale_Y, copy
+            X, Y, weights
         )
 
         # Get shapes
@@ -571,9 +537,7 @@ class PLS(PLSBase):
 
         # steps 2-6
         for i in range(A):
-            XTY, w, p, q, r, t = self._main_loop_body(
-                A, i, X, XTY, M, K, P, R, self.differentiable, self.dtype
-            )
+            XTY, w, p, q, r, t = self._main_loop_body(A, i, X, XTY, M, K, P, R)
             W = W.at[i].set(w.squeeze())
             P = P.at[i].set(p.squeeze())
             Q = Q.at[i].set(q.squeeze())
