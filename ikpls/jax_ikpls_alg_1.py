@@ -261,7 +261,6 @@ class PLS(PLSBase):
         K: int,
         P: jax.Array,
         R: jax.Array,
-        differentiable: bool,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Execute the main loop body of Improved Kernel PLS Algorithm #1. This function
@@ -292,9 +291,6 @@ class PLS(PLSBase):
 
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
-
-        differentiable : bool
-            Whether to use a differentiable version of the algorithm.
 
         Returns
         -------
@@ -327,10 +323,10 @@ class PLS(PLSBase):
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
         w, norm = self._step_2(XTY, M, K)
-        if not differentiable:
+        if not self.differentiable:
             self._weight_warning_callback(i, norm)
         # step 3
-        if differentiable:
+        if self.differentiable:
             r = self._step_3(A, w, P, R)
         else:
             r = self._step_3(i, w, P, R)
@@ -576,7 +572,7 @@ class PLS(PLSBase):
         # steps 2-6
         for i in range(A):
             XTY, w, p, q, r, t = self._main_loop_body(
-                A, i, X, XTY, M, K, P, R, self.differentiable
+                A, i, X, XTY, M, K, P, R, self.differentiable, self.dtype
             )
             W = W.at[i].set(w.squeeze())
             P = P.at[i].set(p.squeeze())

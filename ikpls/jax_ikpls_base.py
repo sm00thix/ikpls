@@ -122,16 +122,14 @@ class PLSBase(abc.ABC):
         if self.dtype == jnp.float64:
             jax.config.update("jax_enable_x64", True)
 
-    def _weight_warning(
-        self, arg: Tuple[npt.NDArray[np.int_], npt.NDArray[np.floating]]
-    ):
+    def _weight_warning(self, i: npt.NDArray[np.int_]):
         """
         Display a warning message if the weight is close to zero.
 
         Parameters
         ----------
-        arg : tuple
-            A tuple containing the component index and the weight norm.
+        i : int
+            The current component number in the PLS algorithm.
 
         Warns
         -----
@@ -145,21 +143,19 @@ class PLSBase(abc.ABC):
         algorithm. It provides a hint about potential instability in results with a
         higher number of components.
         """
-        i, norm = arg
-        if np.isclose(norm, 0, atol=np.finfo(self.dtype).eps, rtol=0):
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", UserWarning)
-                warnings.warn(
-                    f"Weight is close to zero. Results with A = {i + 1} component(s) "
-                    "or higher may be unstable."
-                )
-            if self.max_stable_components in (None, self.A):
-                self.max_stable_components = int(i)
+        with warnings.catch_warnings():
+            warnings.simplefilter("always", UserWarning)
+            warnings.warn(
+                f"Weight is close to zero. Results with A = {i + 1} component(s) "
+                "or higher may be unstable."
+            )
+        if self.max_stable_components in (None, self.A):
+            self.max_stable_components = int(i)
 
+    @partial(jax.jit, static_argnums=0)
     def _weight_warning_callback(self, i, norm):
-        jax.experimental.io_callback(
-            self._weight_warning, None, (i, norm), ordered=True
-        )
+        if jnp.isclose(norm, 0, atol=jnp.finfo(self.dtype).eps, rtol=0):
+            jax.experimental.io_callback(self._weight_warning, None, i, ordered=True)
 
     @partial(jax.jit, static_argnums=0)
     def _compute_regression_coefficients(
@@ -216,7 +212,7 @@ class PLSBase(abc.ABC):
 
         if weights is not None:
             weights = jnp.asarray(weights, dtype=self.dtype)
-            weights = jnp.squeeze(weights)
+            weights = jnp.ravel(weights)
         return X, Y, weights
 
     @partial(jax.jit, static_argnums=0)
@@ -312,7 +308,6 @@ class PLSBase(abc.ABC):
         center_Y: bool,
         scale_X: bool,
         scale_Y: bool,
-        copy: bool,
     ):
         """
         Preprocess the input matrices based on the centering and scaling parameters.
@@ -352,10 +347,10 @@ class PLSBase(abc.ABC):
         if self.verbose:
             print(f"_preprocess_input_matrices for {self.name} will be JIT compiled...")
 
-        if (center_X or scale_X) and copy:
+        if (center_X or scale_X) and self.copy:
             X = X.copy()
 
-        if (center_Y or scale_Y) and copy:
+        if (center_Y or scale_Y) and self.copy:
             Y = Y.copy()
 
         if center_X:

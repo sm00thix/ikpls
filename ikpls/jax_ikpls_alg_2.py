@@ -396,7 +396,6 @@ class PLS(PLSBase):
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
-        copy: bool = True,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -487,7 +486,7 @@ class PLS(PLSBase):
 
         X, Y, weights = self._initialize_input_matrices(X, Y, weights)
         X, Y, X_mean, Y_mean, X_std, Y_std = self._center_scale_input_matrices(
-            X, Y, weights, center_X, center_Y, scale_X, scale_Y, copy
+            X, Y, weights, center_X, center_Y, scale_X, scale_Y
         )
 
         # Get shapes
@@ -503,7 +502,7 @@ class PLS(PLSBase):
         # steps 2-6
         for i in range(A):
             XTY, w, p, q, r = self._main_loop_body(
-                A, i, XTX, XTY, M, K, P, R, self.differentiable
+                A, i, XTX, XTY, M, K, P, R, self.differentiable, self.dtype
             )
             W = W.at[i].set(w.squeeze())
             P = P.at[i].set(p.squeeze())

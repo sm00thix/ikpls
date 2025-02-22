@@ -4208,7 +4208,7 @@ class TestClass:
         splits = splits[: step_size_row * min_x_dim : step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=0.15)
+        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=0.2)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation

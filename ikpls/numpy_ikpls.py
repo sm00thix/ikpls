@@ -224,7 +224,7 @@ class PLS(BaseEstimator):
         if weights is not None:
             weights = np.asarray(weights, dtype=self.dtype)
             weights = np.reshape(weights, (-1, 1))
-            squeezed_weights = weights.squeeze()
+            flattened_weights = weights.flatten()
             if self.scale_X or self.scale_Y:
                 num_non_zero_weights = np.asarray(
                     np.count_nonzero(weights), dtype=self.dtype
@@ -232,7 +232,7 @@ class PLS(BaseEstimator):
                 scale_dof = num_non_zero_weights - 1
                 avg_non_zero_weights = np.sum(weights) / num_non_zero_weights
         else:
-            squeezed_weights = None
+            flattened_weights = None
 
         if (self.center_X or self.scale_X) and self.copy:
             X = X.copy()
@@ -242,7 +242,7 @@ class PLS(BaseEstimator):
 
         if self.center_X or self.scale_X:
             self.X_mean = np.asarray(
-                np.average(X, axis=0, weights=squeezed_weights, keepdims=True),
+                np.average(X, axis=0, weights=flattened_weights, keepdims=True),
                 dtype=self.dtype,
             )
         if self.center_X:
@@ -250,7 +250,7 @@ class PLS(BaseEstimator):
 
         if self.center_Y or self.scale_Y:
             self.Y_mean = np.asarray(
-                np.average(Y, axis=0, weights=squeezed_weights, keepdims=True),
+                np.average(Y, axis=0, weights=flattened_weights, keepdims=True),
                 dtype=self.dtype,
             )
         if self.center_Y:
