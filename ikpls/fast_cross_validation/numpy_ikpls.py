@@ -128,12 +128,11 @@ class PLS:
         i : int
             The current number of components.
         """
-        with warnings.catch_warnings():
-            warnings.simplefilter("always", UserWarning)
-            warnings.warn(
-                f"Weight is close to zero. Results with A = {i} component(s) or higher"
-                " may be unstable."
-            )
+        warnings.warn(
+            message=f"Weight is close to zero. Results with A = {i + 1} "
+            "component(s) or higher may be unstable.",
+            category=UserWarning,
+        )
 
     def _stateless_fit(
         self,

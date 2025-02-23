@@ -143,12 +143,11 @@ class PLSBase(abc.ABC):
         algorithm. It provides a hint about potential instability in results with a
         higher number of components.
         """
-        with warnings.catch_warnings():
-            warnings.simplefilter("always", UserWarning)
-            warnings.warn(
-                f"Weight is close to zero. Results with A = {i + 1} component(s) "
-                "or higher may be unstable."
-            )
+        warnings.warn(
+            message=f"Weight is close to zero. Results with A = {i + 1} "
+            "component(s) or higher may be unstable.",
+            category=UserWarning,
+        )
         if self.max_stable_components in (None, self.A):
             self.max_stable_components = int(i)
 

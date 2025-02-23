@@ -37,6 +37,11 @@ from . import load_data
 jax.config.update("jax_enable_x64", True)
 
 
+# Warning raised due to MathJax in some docstrins in the FastCVPLS class.
+@pytest.mark.filterwarnings(
+    "ignore", category=DeprecationWarning, match="Invalid escape sequence"
+)
+@pytest.mark.filterwarnings("ignore")
 class TestClass:
     """
     Class for testing the IKPLS implementation.
@@ -4139,7 +4144,7 @@ class TestClass:
     )
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, message="Weight is close to zero."
+        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_center_scale_combinations_pls_1_n_less_k(self):
         """
@@ -4180,7 +4185,7 @@ class TestClass:
     )
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, message="Weight is close to zero."
+        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_center_scale_combinations_pls_1_n_eq_k(self):
         """
@@ -4975,7 +4980,7 @@ class TestClass:
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, message="Weight is close to zero."
+        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_1(self):
         """
@@ -5012,7 +5017,7 @@ class TestClass:
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, message="Weight is close to zero."
+        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_2_m_less_k(self):
         """
@@ -5055,7 +5060,7 @@ class TestClass:
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, message="Weight is close to zero."
+        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_2_m_eq_k(self):
         """
@@ -5096,9 +5101,8 @@ class TestClass:
             X, Y, random_weights, splits, atol=1e-7, rtol=1e-7
         )
 
-    # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, message="Weight is close to zero."
+        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_2_m_greater_k(self):
         """

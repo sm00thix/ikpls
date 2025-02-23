@@ -126,12 +126,11 @@ class PLS(BaseEstimator):
         -------
         None.
         """
-        with warnings.catch_warnings():
-            warnings.simplefilter("always", UserWarning)
-            warnings.warn(
-                f"Weight is close to zero. Results with A = {i + 1} component(s) or "
-                "higher may be unstable."
-            )
+        warnings.warn(
+            message=f"Weight is close to zero. Results with A = {i + 1} "
+            "component(s) or higher may be unstable.",
+            category=UserWarning,
+        )
         self.max_stable_components = i
 
     def fit(
