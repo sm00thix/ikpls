@@ -36,6 +36,9 @@ from . import load_data
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
 
+# Set JAX default device to CPU.
+jax.default_device(jax.devices("cpu")[0])
+
 
 # Warning raised due to MathJax in some docstrins in the FastCVPLS class.
 @pytest.mark.filterwarnings(
