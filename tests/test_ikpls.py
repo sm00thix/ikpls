@@ -12,6 +12,7 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
+import os
 from collections.abc import Callable
 from itertools import product
 from typing import List, Optional, Tuple, Union
@@ -30,8 +31,11 @@ from ikpls.fast_cross_validation.numpy_ikpls import PLS as FastCVPLS
 from ikpls.jax_ikpls_alg_1 import PLS as JAX_Alg_1
 from ikpls.jax_ikpls_alg_2 import PLS as JAX_Alg_2
 from ikpls.numpy_ikpls import PLS as NpPLS
-
 from . import load_data
+
+os.environ["XLA_FLAGS"] = (
+    "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
@@ -41,7 +45,9 @@ jax.config.update("jax_enable_x64", True)
 @pytest.mark.filterwarnings(
     "ignore", category=SyntaxWarning, match="Invalid escape sequence"
 )
-@pytest.mark.filterwarnings("ignore")
+@pytest.mark.filterwarnings(
+    "ignore", category=DeprecationWarning, match="Invalid escape sequence"
+)
 class TestClass:
     """
     Class for testing the IKPLS implementation.
@@ -3850,10 +3856,20 @@ class TestClass:
             )
 
             np_pls_alg_1_rmses = np_pls_alg_1.cross_validate(
-                X, Y, n_components, splits, self.rmse_per_component
+                X,
+                Y,
+                n_components,
+                splits,
+                self.rmse_per_component,
+                n_jobs=2,
             )
             np_pls_alg_2_rmses = np_pls_alg_2.cross_validate(
-                X, Y, n_components, splits, self.rmse_per_component
+                X,
+                Y,
+                n_components,
+                splits,
+                self.rmse_per_component,
+                n_jobs=2,
             )
 
             # Compute RMSE on the validation predictions using the fast cross-validation
@@ -3864,7 +3880,7 @@ class TestClass:
                 A=n_components,
                 cv_splits=splits,
                 metric_function=self.rmse_per_component,
-                n_jobs=-1,
+                n_jobs=2,
                 verbose=0,
             )
             fast_cv_np_pls_alg_2_results = fast_cv_np_pls_alg_2.cross_validate(
@@ -3873,7 +3889,7 @@ class TestClass:
                 A=n_components,
                 cv_splits=splits,
                 metric_function=self.rmse_per_component,
-                n_jobs=-1,
+                n_jobs=2,
                 verbose=0,
             )
 
