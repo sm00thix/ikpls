@@ -143,7 +143,7 @@ class PLS(PLSBase):
         T : Array of shape (A, N)
             PLS scores matrix of X.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_get_initial_matrices for {self.name} will be JIT compiled...")
         B, W, P, Q, R = super()._get_initial_matrices(A, K, M)
         T = jnp.empty(shape=(A, N), dtype=self.dtype)
@@ -168,7 +168,7 @@ class PLS(PLSBase):
         sqrt_WX : Array of shape (N, K)
             Product of the square root of the weights matrix and the predictor matrix.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_get_sqrt_WX for {self.name} will be JIT compiled...")
         weights = jnp.expand_dims(weights, axis=1)
         sqrt_weights_mat = jnp.sqrt(weights)
@@ -203,7 +203,7 @@ class PLS(PLSBase):
             else:
                 Y = self._compute_AW(Y, weights)
 
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_1 for {self.name} will be JIT compiled...")
         return self._compute_initial_XTY(X.T, Y)
 
@@ -241,7 +241,7 @@ class PLS(PLSBase):
         --------
         _step_1 : Computes the initial intermediate result in the PLS algorithm.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_4 for {self.name} will be JIT compiled...")
         t = X @ r
         tT = t.T
@@ -319,7 +319,7 @@ class PLS(PLSBase):
             If at any point during iteration over the number of components `A`, the
             residual goes below machine epsilon.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
         w, norm = self._step_2(XTY, M, K)
@@ -514,7 +514,7 @@ class PLS(PLSBase):
         (except B) is transposed from the usual representation.
         """
 
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_fit for {self.name} will be JIT compiled...")
 
         X, Y, weights = self._initialize_input_matrices(X, Y, weights)

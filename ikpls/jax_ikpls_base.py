@@ -240,7 +240,7 @@ class PLSBase(abc.ABC):
         A_mean : Array of shape (1, K) or (1, M)
             Mean of the predictor variables or response variables.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"get_means for {self.name} will be JIT compiled...")
 
         A_mean = jnp.average(A, axis=0, weights=weights, keepdims=True)
@@ -284,7 +284,7 @@ class PLSBase(abc.ABC):
         A_std : Array of shape (1, K) or (1, M)
             Sample standard deviation of the predictor variables or response variables.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"get_stds for {self.name} will be JIT compiled...")
 
         # A_std = jnp.std(A, axis=0, dtype=self.dtype, keepdims=True, ddof=1)
@@ -334,7 +334,7 @@ class PLSBase(abc.ABC):
         Y : Array of shape (N, M)
             Potentially centered and potentially scaled response variables matrix.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_preprocess_input_matrices for {self.name} will be JIT compiled...")
 
         if (self.center_X or self.scale_X) and self.copy:
@@ -456,7 +456,8 @@ class PLSBase(abc.ABC):
         This method calculates the transposed predictor variables matrix from the
         original predictor variables matrix.
         """
-        print(f"_compute_XT for {self.name} will be JIT compiled...")
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_compute_XT for {self.name} will be JIT compiled...")
         return X.T
 
     @partial(jax.jit, static_argnums=0)
@@ -477,7 +478,8 @@ class PLSBase(abc.ABC):
         AW : Array of shape (N, K) or (N, M)
             Product of A and the weights matrix.
         """
-        print(f"_get_AW for {self.name} will be JIT compiled...")
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_get_AW for {self.name} will be JIT compiled...")
         return A * jnp.expand_dims(weights, axis=1)
 
     @partial(jax.jit, static_argnums=0)
@@ -505,7 +507,8 @@ class PLSBase(abc.ABC):
         This method calculates the initial cross-covariance matrix of the predictor
         variables and the response variables.
         """
-        print(f"_compute_initial_XTY for {self.name} will be JIT compiled...")
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_compute_initial_XTY for {self.name} will be JIT compiled...")
         return XT @ Y
 
     @partial(jax.jit, static_argnums=0)
@@ -532,7 +535,8 @@ class PLSBase(abc.ABC):
         This method calculates the product of the transposed predictor variables matrix
         and the predictor variables matrix.
         """
-        print(f"_compute_XTX for {self.name} will be JIT compiled...")
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_compute_XTX for {self.name} will be JIT compiled...")
         return XT @ X
 
     @abc.abstractmethod
@@ -587,7 +591,7 @@ class PLSBase(abc.ABC):
         This method computes the next weight vector `w` for the PLS algorithm and its
         associated norm.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_2 for {self.name} will be JIT compiled...")
         if M == 1:
             norm = jla.norm(XTY)
@@ -640,7 +644,7 @@ class PLSBase(abc.ABC):
         in the PLS algorithm. It is a key step for calculating the loadings and weights
         matrices.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_3 for {self.name} will be JIT compiled...")
         r = jnp.copy(w)
         r, P, w, R = jax.lax.fori_loop(0, i, self._step_3_body, (r, P, w, R))
@@ -713,7 +717,7 @@ class PLSBase(abc.ABC):
         This method is the body of the third step of the PLS algorithm and iteratively
         computes orthogonal weight vectors used in the PLS algorithm.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_3_body for {self.name} will be JIT compiled...")
         r, P, w, R = carry
         r = r - P[j].reshape(-1, 1).T @ w * R[j].reshape(-1, 1)
@@ -744,7 +748,7 @@ class PLSBase(abc.ABC):
     def _step_5(
         self, XTY: jax.Array, p: jax.Array, q: jax.Array, tTt: jax.Array
     ) -> jax.Array:
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_5 for {self.name} will be JIT compiled...")
         return XTY - (p @ q.T) * tTt
 
@@ -975,7 +979,7 @@ class PLSBase(abc.ABC):
         arguments.
         """
         X = jnp.asarray(X, dtype=self.dtype)
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_predict for {self.name} will be JIT compiled...")
 
         if X_mean is not None:
@@ -1104,7 +1108,7 @@ class PLSBase(abc.ABC):
         stateless_predict : Computes `Y_pred` given predictor variables `X` and
         regression tensor `B` and optionally `A` components.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_fit_predict_eval for {self.name} will be JIT compiled...")
 
         X_train, Y_train, weights_train = self._initialize_input_matrices(
@@ -1384,7 +1388,7 @@ class PLSBase(abc.ABC):
         This method performs cross-validation for a single fold of the data, including
         preprocessing, fitting, predicting, and evaluating the PLS model.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_inner_cv for {self.name} will be JIT compiled...")
 
         X_train = jnp.take(X, train_idxs, axis=0)

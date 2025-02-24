@@ -134,7 +134,7 @@ class PLS(PLSBase):
         R : Array of shape (A, K)
             PLS weights matrix to compute scores T directly from original X.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_get_initial_matrices for {self.name} will be JIT compiled...")
         return super()._get_initial_matrices(A, K, M)
 
@@ -165,7 +165,7 @@ class PLS(PLSBase):
             Initial cross-covariance matrix of the predictor variables and the response
             variables.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_1 for {self.name} will be JIT compiled...")
         if weights is None:
             XT = self._compute_XT(X)
@@ -204,7 +204,7 @@ class PLS(PLSBase):
         q : Array of shape (K, M)
             q matrix.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_4 for {self.name} will be JIT compiled...")
         rXTX = r.T @ XTX
         tTt = rXTX @ r
@@ -271,7 +271,7 @@ class PLS(PLSBase):
         r : Array of shape (K, K)
             PLS weight vector.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
         w, norm = self._step_2(XTY, M, K)
@@ -446,7 +446,7 @@ class PLS(PLSBase):
         For optimization purposes, the internal representation of all matrices
         (except B) is transposed from the usual representation.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_fit for {self.name} will be JIT compiled...")
 
         X, Y, weights = self._initialize_input_matrices(X, Y, weights)
