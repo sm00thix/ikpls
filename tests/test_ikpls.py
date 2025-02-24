@@ -12,7 +12,6 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
-import os
 from collections.abc import Callable
 from itertools import product
 from typing import List, Optional, Tuple, Union
@@ -33,12 +32,12 @@ from ikpls.jax_ikpls_alg_2 import PLS as JAX_Alg_2
 from ikpls.numpy_ikpls import PLS as NpPLS
 from . import load_data
 
-os.environ["XLA_FLAGS"] = (
-    "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-)
-
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
+
+# Disable the JAX JIT compiler for all tests. This is done to avoid issues with the
+# GitHub hosted Ubuntu runners that will otherwise run out of memory.
+jax.config.update("jax_disable_jit", True)
 
 
 # Warning raised due to MathJax in some docstrins in the FastCVPLS class.
@@ -2494,10 +2493,6 @@ class TestClass:
             cv_splits=cv_splits,
         )
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
     def test_pls_1_constant_y(self):
         """
         Description
@@ -2519,10 +2514,6 @@ class TestClass:
         assert Y.shape[1] == 1
         self.check_pls_constant_y(X, Y)
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
     def test_pls_2_m_less_k_constant_y(self):
         """
         Description
@@ -2546,10 +2537,6 @@ class TestClass:
         assert Y.shape[1] < X.shape[1]
         self.check_pls_constant_y(X, Y)
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
     def test_pls_2_m_eq_k_constant_y(self):
         """
         Description
@@ -2573,10 +2560,6 @@ class TestClass:
         assert Y.shape[1] == X.shape[1]
         self.check_pls_constant_y(X, Y)
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
     def test_pls_2_m_greater_k_constant_y(self):
         """
         Description
