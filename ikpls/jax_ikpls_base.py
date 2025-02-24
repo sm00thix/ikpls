@@ -19,6 +19,7 @@ from functools import partial
 from typing import Any, Tuple, Union
 
 import jax
+import jax.experimental
 import jax.numpy as jnp
 import jax.numpy.linalg as jla
 import numpy as np
@@ -67,10 +68,12 @@ class PLSBase(abc.ABC):
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
 
-    reverse_differentiable: bool, optional, default=False
+    differentiable: bool, optional, default=False
         Whether to make the implementation end-to-end differentiable. The
         differentiable version is slightly slower. Results among the two versions are
-        identical.
+        identical. If this is True, `fit` and `stateless_fit` will not issue a warning
+        if the residual goes below machine epsilon, and `max_stable_components` will
+        not be set.
 
     verbose : bool, optional, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
@@ -92,7 +95,7 @@ class PLSBase(abc.ABC):
         scale_Y: bool = True,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
-        reverse_differentiable: bool = False,
+        differentiable: bool = False,
         verbose: bool = False,
     ) -> None:
         self.center_X = center_X
@@ -102,9 +105,10 @@ class PLSBase(abc.ABC):
         self.copy = copy
         self.dtype = dtype
         self.eps = jnp.finfo(self.dtype).eps
-        self.reverse_differentiable = reverse_differentiable
+        self.differentiable = differentiable
         self.verbose = verbose
         self.name = "Improved Kernel PLS Algorithm"
+        self.A = None
         self.B = None
         self.W = None
         self.P = None
@@ -114,15 +118,18 @@ class PLSBase(abc.ABC):
         self.Y_mean = None
         self.X_std = None
         self.Y_std = None
+        self.max_stable_components = None
+        if self.dtype == jnp.float64:
+            jax.config.update("jax_enable_x64", True)
 
-    def _weight_warning(self, arg: Tuple[npt.NDArray[np.int_], npt.NDArray[np.floating]]):
+    def _weight_warning(self, i: npt.NDArray[np.int_]):
         """
         Display a warning message if the weight is close to zero.
 
         Parameters
         ----------
-        arg : tuple
-            A tuple containing the component index and the weight norm.
+        i : int
+            The current component number in the PLS algorithm.
 
         Warns
         -----
@@ -136,14 +143,25 @@ class PLSBase(abc.ABC):
         algorithm. It provides a hint about potential instability in results with a
         higher number of components.
         """
-        i, norm = arg
-        if np.isclose(norm, 0, atol=np.finfo(self.dtype).eps, rtol=0):
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", UserWarning)
-                warnings.warn(
-                    f"Weight is close to zero. Results with A = {i} component(s) or "
-                    "higher may be unstable."
-                )
+        warnings.warn(
+            message=f"Weight is close to zero. Results with A = {i + 1} "
+            "component(s) or higher may be unstable.",
+            category=UserWarning,
+        )
+        if self.max_stable_components in (None, self.A):
+            self.max_stable_components = int(i)
+
+    @partial(jax.jit, static_argnums=0)
+    def _weight_warning_callback(self, i, norm):
+        close_to_zero = jnp.isclose(norm, 0, atol=jnp.finfo(self.dtype).eps, rtol=0)
+        return jax.lax.cond(
+            close_to_zero,
+            lambda i: jax.experimental.io_callback(
+                self._weight_warning, None, i, ordered=True
+            ),
+            lambda _i: None,
+            i,
+        )
 
     @partial(jax.jit, static_argnums=0)
     def _compute_regression_coefficients(
@@ -178,7 +196,9 @@ class PLSBase(abc.ABC):
         return b
 
     @partial(jax.jit, static_argnums=0)
-    def _initialize_input_matrices(self, X: jax.Array, Y: jax.Array):
+    def _initialize_input_matrices(
+        self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array] = None
+    ) -> Tuple[jax.Array, jax.Array, Union[None, jax.Array]]:
         """
         Initialize the input matrices used in the PLS algorithm.
 
@@ -195,10 +215,14 @@ class PLSBase(abc.ABC):
 
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
-        return X, Y
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=self.dtype)
+            weights = jnp.ravel(weights)
+        return X, Y, weights
 
     @partial(jax.jit, static_argnums=0)
-    def get_mean(self, A: ArrayLike):
+    def get_mean(self, A: ArrayLike, weights: Union[None, ArrayLike] = None):
         """
         Get the mean of the a matrix.
 
@@ -207,19 +231,31 @@ class PLSBase(abc.ABC):
         A : Array of shape (N, K) or (N, M)
             Predictor variables matrix or response variables matrix.
 
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
         Returns
         -------
         A_mean : Array of shape (1, K) or (1, M)
             Mean of the predictor variables or response variables.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"get_means for {self.name} will be JIT compiled...")
 
-        A_mean = jnp.mean(A, axis=0, dtype=self.dtype, keepdims=True)
+        A_mean = jnp.average(A, axis=0, weights=weights, keepdims=True)
+        A_mean = jnp.asarray(A_mean, dtype=self.dtype)
         return A_mean
 
     @partial(jax.jit, static_argnums=0)
-    def get_std(self, A: ArrayLike):
+    def get_std(
+        self,
+        A: ArrayLike,
+        mean: ArrayLike,
+        weights: Union[None, ArrayLike],
+        scale_dof: int,
+        avg_non_zero_weights: Union[None, float],
+    ):
         """
         Get the standard deviation of a matrix.
 
@@ -228,28 +264,52 @@ class PLSBase(abc.ABC):
         A : Array of shape (N, K) or (N, M)
             Predictor variables matrix or response variables matrix.
 
+        mean : Array of shape (1, K) or (1, M)
+            Mean of the predictor variables or response variables. This is the value
+            from which the squared deviations are calculated.
+
+        weights : Array of shape (N,) or None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        scale_dof : int
+            The degrees of freedom to use in the standard deviation calculation
+
+        avg_non_zero_weights : float or None
+            The average of the non-zero weights in the weights vector. Only used if
+            weights are provided.
+
         Returns
         -------
         A_std : Array of shape (1, K) or (1, M)
             Sample standard deviation of the predictor variables or response variables.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"get_stds for {self.name} will be JIT compiled...")
 
-        A_std = jnp.std(A, axis=0, dtype=self.dtype, keepdims=True, ddof=1)
+        # A_std = jnp.std(A, axis=0, dtype=self.dtype, keepdims=True, ddof=1)
+        if weights is None:
+            A_std = jnp.sqrt(
+                jnp.sum((A - mean) ** 2, axis=0, keepdims=True) / scale_dof
+            )
+        else:
+            A_std = jnp.sqrt(
+                jnp.sum(
+                    jnp.expand_dims(weights, axis=1) * (A - mean) ** 2,
+                    axis=0,
+                    keepdims=True,
+                )
+                / (scale_dof * avg_non_zero_weights)
+            )
         A_std = jnp.where(jnp.abs(A_std) <= self.eps, 1, A_std)
         return A_std
 
-    @partial(jax.jit, static_argnums=(0, 3, 4, 5, 6, 7))
+    @partial(jax.jit, static_argnums=0)
     def _center_scale_input_matrices(
         self,
         X: jax.Array,
         Y: jax.Array,
-        center_X: bool,
-        center_Y: bool,
-        scale_X: bool,
-        scale_Y: bool,
-        copy: bool,
+        weights: Union[None, jax.Array],
     ):
         """
         Preprocess the input matrices based on the centering and scaling parameters.
@@ -262,17 +322,9 @@ class PLSBase(abc.ABC):
         Y : Array of shape (N, M)
             Response variables matrix.
 
-        center_X : bool
-            Whether to center the predictor variables (X) before fitting.
-
-        center_Y : bool
-            Whether to center the response variables (Y) before fitting.
-
-        scale_X : bool
-            Whether to scale the predictor variables (X) before fitting.
-
-        scale_Y : bool
-            Whether to scale the response variables (Y) before fitting.
+        weights : Array of shape (N,) or None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
 
         Returns
         -------
@@ -282,35 +334,52 @@ class PLSBase(abc.ABC):
         Y : Array of shape (N, M)
             Potentially centered and potentially scaled response variables matrix.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_preprocess_input_matrices for {self.name} will be JIT compiled...")
 
-        if (center_X or scale_X) and copy:
+        if (self.center_X or self.scale_X) and self.copy:
             X = X.copy()
 
-        if (center_Y or scale_Y) and copy:
+        if (self.center_Y or self.scale_Y) and self.copy:
             Y = Y.copy()
 
-        if center_X:
-            X_mean = self.get_mean(X)
+        if self.center_X:
+            X_mean = self.get_mean(X, weights)
             X = X - X_mean
         else:
             X_mean = None
 
-        if center_Y:
-            Y_mean = self.get_mean(Y)
+        if self.center_Y:
+            Y_mean = self.get_mean(Y, weights)
             Y = Y - Y_mean
         else:
             Y_mean = None
 
-        if scale_X:
-            X_std = self.get_std(X)
+        if self.scale_X or self.scale_Y:
+            if weights is not None:
+                num_nonzero_weights = jnp.asarray(
+                    jnp.count_nonzero(weights), dtype=self.dtype
+                )
+                avg_non_zero_weights = jnp.sum(weights) / num_nonzero_weights
+                scale_dof = num_nonzero_weights - 1
+            else:
+                avg_non_zero_weights = None
+                scale_dof = X.shape[0] - 1
+
+        if self.scale_X:
+            new_X_mean = 0 if self.center_X else self.get_mean(X, weights)
+            X_std = self.get_std(
+                X, new_X_mean, weights, scale_dof, avg_non_zero_weights
+            )
             X = X / X_std
         else:
             X_std = None
 
-        if scale_Y:
-            Y_std = self.get_std(Y)
+        if self.scale_Y:
+            new_Y_mean = 0 if self.center_Y else self.get_mean(Y, weights)
+            Y_std = self.get_std(
+                Y, new_Y_mean, weights, scale_dof, avg_non_zero_weights
+            )
             Y = Y / Y_std
         else:
             Y_std = None
@@ -387,7 +456,31 @@ class PLSBase(abc.ABC):
         This method calculates the transposed predictor variables matrix from the
         original predictor variables matrix.
         """
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_compute_XT for {self.name} will be JIT compiled...")
         return X.T
+
+    @partial(jax.jit, static_argnums=0)
+    def _compute_AW(self, A: jax.Array, weights: jax.Array) -> jax.Array:
+        """
+        Get the product of A and the weights matrix.
+
+        Parameters
+        ----------
+        A : Array of shape (N, K) or (N, M)
+            Predictor variables.
+
+        weights : Array of shape (N,)
+            Weights for each observation.
+
+        Returns
+        -------
+        AW : Array of shape (N, K) or (N, M)
+            Product of A and the weights matrix.
+        """
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_get_AW for {self.name} will be JIT compiled...")
+        return A * jnp.expand_dims(weights, axis=1)
 
     @partial(jax.jit, static_argnums=0)
     def _compute_initial_XTY(self, XT: jax.Array, Y: jax.Array) -> jax.Array:
@@ -414,6 +507,8 @@ class PLSBase(abc.ABC):
         This method calculates the initial cross-covariance matrix of the predictor
         variables and the response variables.
         """
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_compute_initial_XTY for {self.name} will be JIT compiled...")
         return XT @ Y
 
     @partial(jax.jit, static_argnums=0)
@@ -440,11 +535,13 @@ class PLSBase(abc.ABC):
         This method calculates the product of the transposed predictor variables matrix
         and the predictor variables matrix.
         """
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_compute_XTX for {self.name} will be JIT compiled...")
         return XT @ X
 
     @abc.abstractmethod
     @partial(jax.jit, static_argnums=0)
-    def _step_1(self, X: jax.Array, Y: jax.Array):
+    def _step_1(self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array]):
         """
         Abstract method representing the first step in the PLS algorithm. This step
         should be implemented in concrete PLS classes.
@@ -464,9 +561,7 @@ class PLSBase(abc.ABC):
         """
 
     @partial(jax.jit, static_argnums=(0, 2, 3))
-    def _step_2(
-        self, XTY: jax.Array, M: int, K: int
-    ) -> Tuple[jax.Array, DTypeLike]:
+    def _step_2(self, XTY: jax.Array, M: int, K: int) -> Tuple[jax.Array, DTypeLike]:
         """
         The second step of the PLS algorithm. Computes the next weight vector and the
         associated norm.
@@ -496,7 +591,7 @@ class PLSBase(abc.ABC):
         This method computes the next weight vector `w` for the PLS algorithm and its
         associated norm.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_2 for {self.name} will be JIT compiled...")
         if M == 1:
             norm = jla.norm(XTY)
@@ -517,7 +612,9 @@ class PLSBase(abc.ABC):
                 norm = eig_vals[-1]
         return w, norm
 
-    def _step_3_base(self, i: int, w: jax.Array, P: jax.Array, R: jax.Array) -> jax.Array:
+    def _step_3_base(
+        self, i: int, w: jax.Array, P: jax.Array, R: jax.Array
+    ) -> jax.Array:
         """
         The third step of the PLS algorithm. Computes the orthogonal weight vectors.
 
@@ -547,7 +644,7 @@ class PLSBase(abc.ABC):
         in the PLS algorithm. It is a key step for calculating the loadings and weights
         matrices.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_3 for {self.name} will be JIT compiled...")
         r = jnp.copy(w)
         r, P, w, R = jax.lax.fori_loop(0, i, self._step_3_body, (r, P, w, R))
@@ -588,12 +685,11 @@ class PLSBase(abc.ABC):
         --------
         _step_3_base : The third step of the PLS algorithm.
         """
-        if self.reverse_differentiable:
+        if self.differentiable:
             jax.jit(self._step_3_base, static_argnums=(0, 1))
             return self._step_3_base(i, w, P, R)
-        else:
-            jax.jit(self._step_3_base, static_argnums=(0))
-            return self._step_3_base(i, w, P, R)
+        jax.jit(self._step_3_base, static_argnums=(0))
+        return self._step_3_base(i, w, P, R)
 
     @partial(jax.jit, static_argnums=0)
     def _step_3_body(
@@ -621,7 +717,7 @@ class PLSBase(abc.ABC):
         This method is the body of the third step of the PLS algorithm and iteratively
         computes orthogonal weight vectors used in the PLS algorithm.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_3_body for {self.name} will be JIT compiled...")
         r, P, w, R = carry
         r = r - P[j].reshape(-1, 1).T @ w * R[j].reshape(-1, 1)
@@ -652,7 +748,7 @@ class PLSBase(abc.ABC):
     def _step_5(
         self, XTY: jax.Array, p: jax.Array, q: jax.Array, tTt: jax.Array
     ) -> jax.Array:
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_5 for {self.name} will be JIT compiled...")
         return XTY - (p @ q.T) * tTt
 
@@ -678,17 +774,13 @@ class PLSBase(abc.ABC):
         """
 
     @abc.abstractmethod
-    @partial(jax.jit, static_argnums=(0, 3, 4, 5, 6, 7, 8))
+    @partial(jax.jit, static_argnums=(0, 3))
     def stateless_fit(
         self,
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
-        center_X: bool = True,
-        center_Y: bool = True,
-        scale_X: bool = True,
-        scale_Y: bool = True,
-        copy: bool = True,
+        weights: Union[None, ArrayLike] = None,
     ) -> Union[
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
@@ -708,29 +800,9 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
-        center_X : bool, default=True
-            Whether to center `X` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        center_Y : bool, default=True
-            Whether to center `Y` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        scale_X : bool, default=True
-            Whether to scale `X` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        scale_Y : bool, default=True
-            Whether to scale `Y` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        copy : bool, optional, default=True
-            Whether to copy `X` and `Y` in fit before potentially applying centering
-            and scaling. If True, then the data is copied before fitting. If False, and
-            `dtype` matches the type of `X` and `Y`, then centering and scaling is done
-            inplace, modifying both arrays.
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
 
         Returns
         -------
@@ -784,7 +856,9 @@ class PLSBase(abc.ABC):
         """
 
     @abc.abstractmethod
-    def fit(self, X: ArrayLike, Y: ArrayLike, A: int) -> None:
+    def fit(
+        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Union[None, ArrayLike] = None
+    ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -799,8 +873,19 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
         Attributes
         ----------
+        A : int
+            Number of components in the PLS model.
+
+        max_stable_components : int
+            Maximum number of components that can be used without the residual going
+            below machine epsilon.
+
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
 
@@ -894,7 +979,7 @@ class PLSBase(abc.ABC):
         arguments.
         """
         X = jnp.asarray(X, dtype=self.dtype)
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_predict for {self.name} will be JIT compiled...")
 
         if X_mean is not None:
@@ -946,20 +1031,33 @@ class PLSBase(abc.ABC):
             X, self.B, n_components, self.X_mean, self.X_std, self.Y_mean, self.Y_std
         )
 
-    @partial(jax.jit, static_argnums=(0, 3, 6, 7, 8, 9, 10, 11))
+    @partial(jax.jit, static_argnums=(0, 3, 8))
     def stateless_fit_predict_eval(
         self,
         X_train: ArrayLike,
         Y_train: ArrayLike,
         A: int,
+        weights_train: Union[None, ArrayLike],
         X_test: ArrayLike,
         Y_test: ArrayLike,
-        metric_function: Callable[[jax.Array, jax.Array], Any],
-        center_X: bool = True,
-        center_Y: bool = True,
-        scale_X: bool = True,
-        scale_Y: bool = True,
-        copy: bool = True,
+        weights_test: Union[None, ArrayLike],
+        metric_function: Union[
+            Callable[
+                [
+                    jax.Array,
+                    jax.Array,
+                    jax.Array,
+                ],
+                Any,
+            ],
+            Callable[
+                [
+                    jax.Array,
+                    jax.Array,
+                ],
+                Any,
+            ],
+        ],
     ) -> Any:
         """
         Computes `B` with `stateless_fit`. Then computes `Y_pred` with
@@ -977,44 +1075,29 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
+        weights_train : Array of shape (N_train,) or None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
         X_test : Array of shape (N_test, K)
             Predictor variables.
 
         Y_test : Array of shape (N_test, M) or (N_test,)
             Response variables.
 
-        metric_function : Callable receiving arrays `Y_test` of shape (N, M) and
-        `Y_pred` (A, N, M) and returns Any
+        weights_test : Array of shape (N_test,) or None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        metric_function : Callable receiving arrays `Y_test` of shape (N, M), `Y_pred`
+        of shape (A, N, M), and, if `weights` is not None, `weights_test` of shape (N,),
+        and returns Any.
             Computes a metric based on true values `Y_test` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
 
-        center_X : bool, default=True
-            Whether to center `X` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        center_Y : bool, default=True
-            Whether to center `Y` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        scale_X : bool, default=True
-            Whether to scale `X` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        scale_Y : bool, default=True
-            Whether to scale `Y` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        copy : bool, optional, default=True
-            Whether to copy `X_train` and `Y_train` in stateless_fit before potentially
-            applying centering and scaling. If True, then the data is copied before
-            fitting. If False, and `dtype` matches the type of `X` and `Y`, then
-            centering and scaling is done inplace, modifying both arrays.
-
         Returns
         -------
-        metric_function(Y_test, Y_pred) : Any.
+        metric_function(Y_test, Y_pred, weights_test) : Any.
 
         See Also
         --------
@@ -1025,28 +1108,30 @@ class PLSBase(abc.ABC):
         stateless_predict : Computes `Y_pred` given predictor variables `X` and
         regression tensor `B` and optionally `A` components.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_fit_predict_eval for {self.name} will be JIT compiled...")
 
-        X_train, Y_train = self._initialize_input_matrices(X=X_train, Y=Y_train)
-        X_test, Y_test = self._initialize_input_matrices(X=X_test, Y=Y_test)
+        X_train, Y_train, weights_train = self._initialize_input_matrices(
+            X=X_train, Y=Y_train, weights=weights_train
+        )
+        X_test, Y_test, weights_test = self._initialize_input_matrices(
+            X=X_test, Y=Y_test, weights=weights_test
+        )
 
         matrices = self.stateless_fit(
             X=X_train,
             Y=Y_train,
             A=A,
-            center_X=center_X,
-            center_Y=center_Y,
-            scale_X=scale_X,
-            scale_Y=scale_Y,
-            copy=copy,
+            weights=weights_train,
         )
         B = matrices[0]
         X_mean, Y_mean, X_std, Y_std = matrices[-4:]
         Y_pred = self.stateless_predict(
             X_test, B, X_mean=X_mean, X_std=X_std, Y_mean=Y_mean, Y_std=Y_std
         )
-        return metric_function(Y_test, Y_pred)
+        if weights_test is None:
+            return metric_function(Y_test, Y_pred)
+        return metric_function(Y_test, Y_pred, weights_test)
 
     def cross_validate(
         self,
@@ -1054,12 +1139,50 @@ class PLSBase(abc.ABC):
         Y: ArrayLike,
         A: int,
         cv_splits: ArrayLike,
-        preprocessing_function: Callable[
-            [jax.Array, jax.Array, jax.Array, jax.Array],
-            Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        metric_function: Union[
+            Callable[
+                [
+                    jax.Array,
+                    jax.Array,
+                    jax.Array,
+                ],
+                Any,
+            ],
+            Callable[
+                [
+                    jax.Array,
+                    jax.Array,
+                ],
+                Any,
+            ],
         ],
-        metric_function: Callable[[jax.Array, jax.Array], Any],
         metric_names: list[str],
+        preprocessing_function: Union[
+            None,
+            Union[
+                Callable[
+                    [
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                    ],
+                    Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+                ],
+                Callable[
+                    [
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                    ],
+                    Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+                ],
+            ],
+        ] = None,
+        weights: Union[None, ArrayLike] = None,
         show_progress=True,
     ) -> dict[str, Any]:
         """
@@ -1081,26 +1204,38 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
-        cv_splits : Array of shape (N,)
-            An array defining cross-validation splits. Each unique value in `cv_splits`
+        cv_splits : Array of Int of shape (N,)
+            An array defining cross-validation splits. Each unique Int in `cv_splits`
             corresponds to a different fold.
 
-        preprocessing_function : Callable receiving arrays `X_train`, `Y_train`,
-        `X_val`, and `Y_val`
-            A function that preprocesses the training and validation data for each
-            fold. It should return preprocessed arrays for `X_train`, `Y_train`,
-            `X_val`, and `Y_val`.
-
-        metric_function : Callable receiving arrays `Y_test` and `Y_pred` and returning
-        Any
+        metric_function : Callable receiving arrays `Y_test` of shape (N, M), `Y_pred`
+        of shape (A, N, M), and, if `weights` is not None, `weights_test` of shape (N,),
+        and returns Any.
             Computes a metric based on true values `Y_test` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
 
         metric_names : list of str
             A list of names for the metrics used for evaluation.
 
+        preprocessing_function : Callable or None, optional, default=None,
+        If Callable, it should receive arrays `X_train`, `Y_train`, `X_val`, `Y_val`,
+        and, if `weights` is not None, also `weights_train`, and `weights_val`, and
+        returning a Tuple of preprocessed `X_train`, `Y_train`, `X_val`, and `Y_val`.
+            A function that preprocesses the training and validation data for each
+            fold. It should return preprocessed arrays for `X_train`, `Y_train`,
+            `X_val`, and `Y_val`.
+
         show_progress : bool, optional, default=True
             If True, displays a progress bar for the cross-validation.
+
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        Attributes
+        ----------
+        A : int
+            Number of components in the PLS model.
 
         Returns
         -------
@@ -1130,6 +1265,7 @@ class PLSBase(abc.ABC):
         """
         X = jnp.asarray(X, dtype=self.dtype)
         Y = jnp.asarray(Y, dtype=self.dtype)
+        self.A = A
         cv_splits = jnp.asarray(cv_splits, dtype=jnp.int64)
         metric_value_lists = [[] for _ in metric_names]
         unique_splits = jnp.unique(cv_splits)
@@ -1142,20 +1278,16 @@ class PLSBase(abc.ABC):
                 train_idxs=train_idxs,
                 val_idxs=val_idxs,
                 A=A,
+                weights=weights,
                 preprocessing_function=preprocessing_function,
                 metric_function=metric_function,
-                center_X=self.center_X,
-                center_Y=self.center_Y,
-                scale_X=self.scale_X,
-                scale_Y=self.scale_Y,
-                copy=self.copy,
             )
             metric_value_lists = self._update_metric_value_lists(
                 metric_value_lists, metric_names, metric_values
             )
         return self._finalize_metric_values(metric_value_lists, metric_names)
 
-    @partial(jax.jit, static_argnums=(0, 5, 6, 7, 8, 9, 10, 11, 12))
+    @partial(jax.jit, static_argnums=(0, 5, 7, 8))
     def _inner_cross_validate(
         self,
         X: ArrayLike,
@@ -1163,16 +1295,49 @@ class PLSBase(abc.ABC):
         train_idxs: jax.Array,
         val_idxs: jax.Array,
         A: int,
-        preprocessing_function: Callable[
-            [jax.Array, jax.Array, jax.Array, jax.Array],
-            Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        weights: Union[None, ArrayLike],
+        preprocessing_function: Union[
+            None,
+            Union[
+                Callable[
+                    [
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                    ],
+                    Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+                ],
+                Callable[
+                    [
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                        jax.Array,
+                    ],
+                    Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+                ],
+            ],
         ],
-        metric_function: Callable[[jax.Array, jax.Array], Any],
-        center_X: bool = True,
-        center_Y: bool = True,
-        scale_X: bool = True,
-        scale_Y: bool = True,
-        copy: bool = True,
+        metric_function: Union[
+            Callable[
+                [
+                    jax.Array,
+                    jax.Array,
+                    jax.Array,
+                ],
+                Any,
+            ],
+            Callable[
+                [
+                    jax.Array,
+                    jax.Array,
+                ],
+                Any,
+            ],
+        ],
     ):
         """
         Performs cross-validation for a single fold of the data and computes evaluation
@@ -1195,40 +1360,23 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
-        preprocessing_function : Callable receiving arrays `X_train`, `Y_train`,
-        `X_val`, and `Y_val`
+        weights : Array of shape (N,) or None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        preprocessing_function : None or Callable receiving arrays `X_train`,
+        `Y_train`, `X_val`, `Y_val`, and also `weights_train`, and `weights_val`, if
+        `weights` is not None, and returning a Tuple of preprocessed `X_train`,
+        `Y_train`, `X_val`, and `Y_val`.
             A function that preprocesses the training and validation data for each
             fold. It should return preprocessed arrays for `X_train`, `Y_train`,
             `X_val`, and `Y_val`.
 
-        metric_function : Callable receiving arrays `Y_test` and `Y_pred` and returning
-        Any
+        metric_function : Callable receiving arrays `Y_test` of shape (N, M), `Y_pred`
+        of shape (A, N, M), and, if `weights` is not None, `weights_test` of shape (N,),
+        and returns Any.
             Computes a metric based on true values `Y_test` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
-
-        center_X : bool, default=True
-            Whether to center `X` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        center_Y : bool, default=True
-            Whether to center `Y` before fitting by subtracting its row of
-            column-wise means from each row.
-
-        scale_X : bool, default=True
-            Whether to scale `X` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        scale_Y : bool, default=True
-            Whether to scale `Y` before fitting by dividing each row with the row of
-            `X`'s column-wise standard deviations. Bessel's correction for the unbiased
-            estimate of the sample standard deviation is used.
-
-        copy : bool, optional, default=True
-            Whether to copy `X_train` and `Y_train` in stateless_fit before potentially
-            applying centering and scaling. If True, then the data is copied before
-            fitting. If False, and `dtype` matches the type of `X` and `Y`, then
-            centering and scaling is done inplace, modifying both arrays.
 
         Returns
         -------
@@ -1240,7 +1388,7 @@ class PLSBase(abc.ABC):
         This method performs cross-validation for a single fold of the data, including
         preprocessing, fitting, predicting, and evaluating the PLS model.
         """
-        if self.verbose:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_inner_cv for {self.name} will be JIT compiled...")
 
         X_train = jnp.take(X, train_idxs, axis=0)
@@ -1248,21 +1396,32 @@ class PLSBase(abc.ABC):
 
         X_val = jnp.take(X, val_idxs, axis=0)
         Y_val = jnp.take(Y, val_idxs, axis=0)
-        X_train, Y_train, X_val, Y_val = preprocessing_function(
-            X_train, Y_train, X_val, Y_val
-        )
+
+        if weights is not None:
+            weights_train = jnp.take(weights, train_idxs)
+            weights_val = jnp.take(weights, val_idxs)
+        else:
+            weights_train = None
+            weights_val = None
+
+        if preprocessing_function is not None:
+            if weights is None:
+                X_train, Y_train, X_val, Y_val = preprocessing_function(
+                    X_train, Y_train, X_val, Y_val
+                )
+            else:
+                X_train, Y_train, X_val, Y_val = preprocessing_function(
+                    X_train, Y_train, X_val, Y_val, weights_train, weights_val
+                )
         metric_values = self.stateless_fit_predict_eval(
             X_train=X_train,
             Y_train=Y_train,
             A=A,
+            weights_train=weights_train,
             X_test=X_val,
             Y_test=Y_val,
+            weights_test=weights_val,
             metric_function=metric_function,
-            center_X=center_X,
-            center_Y=center_Y,
-            scale_X=scale_X,
-            scale_Y=scale_Y,
-            copy=copy,
         )
         return metric_values
 

@@ -258,7 +258,7 @@ def jax_metric_names(M):
     return all_names
 
 
-def cross_val_cpu_pls(pls, X, Y, n_splits, fit_params, n_jobs, verbose, estimate):
+def cross_val_cpu_pls(pls, X, Y, n_splits, params, n_jobs, verbose, estimate):
     """
     Description
     -----------
@@ -274,7 +274,7 @@ def cross_val_cpu_pls(pls, X, Y, n_splits, fit_params, n_jobs, verbose, estimate
         Response variables.
     n_splits : int
         Number of splits in cross-validation.
-    fit_params : dict
+    params : dict
         Parameters to pass to the fit method.
     n_jobs : int
         Number of jobs to run in parallel.
@@ -297,13 +297,15 @@ def cross_val_cpu_pls(pls, X, Y, n_splits, fit_params, n_jobs, verbose, estimate
         n_splits_to_execute = 2 * n_jobs
         if n_splits_to_execute > n_splits:
             n_splits_to_execute = n_splits
+
         def cv_estimate():
             for _ in range(n_splits_to_execute):
                 (train, test) = next(cv.split(X))
                 yield train, test
+
         cv_to_pass = cv_estimate()
     t = Timer(
-        stmt="scores = cross_validate(pls, X, Y, cv=cv_to_pass, scoring=mse_for_each_target, return_estimator=False, fit_params=fit_params, n_jobs=n_jobs, verbose=verbose, )",
+        stmt="scores = cross_validate(pls, X, Y, cv=cv_to_pass, scoring=mse_for_each_target, return_estimator=False, params=params, n_jobs=n_jobs, verbose=verbose, )",
         timer=default_timer,
         globals=locals() | globals(),
     )
@@ -330,7 +332,7 @@ def fast_cross_val_cpu_pls(pls, X, Y, A, n_splits, n_jobs, verbose):
         Response variables.
     n_splits : int
         Number of splits in cross-validation.
-    fit_params : dict
+    params : dict
         Parameters to pass to the fit method.
     n_jobs : int
         Number of jobs to run in parallel.
@@ -360,7 +362,7 @@ def fast_cross_val_cpu_pls(pls, X, Y, A, n_splits, n_jobs, verbose):
     return t.timeit(number=1)
 
 
-def single_fit_cpu_pls(pls, X, Y, fit_params=None):
+def single_fit_cpu_pls(pls, X, Y, params=None):
     """
     Description
     -----------
@@ -374,7 +376,7 @@ def single_fit_cpu_pls(pls, X, Y, fit_params=None):
         Predictor variables.
     Y : Array of shape (N, M)
         Response variables.
-    fit_params : dict
+    params : dict
         Parameters to pass to the fit method.
 
     Returns
@@ -383,7 +385,7 @@ def single_fit_cpu_pls(pls, X, Y, fit_params=None):
         Execution time for single fit.
     """
     t = Timer(
-        stmt="pls.fit(X, Y, **fit_params)",
+        stmt="pls.fit(X, Y, **params)",
         timer=default_timer,
         globals=locals() | globals(),
     )

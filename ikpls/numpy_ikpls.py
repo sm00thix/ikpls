@@ -11,11 +11,14 @@ E-mail: ole.e@di.ku.dk
 """
 
 import warnings
-from typing import Union
+from collections.abc import Callable, Hashable
+from typing import Any, Iterable, Tuple, Union
 
+import joblib
 import numpy as np
 import numpy.linalg as la
 import numpy.typing as npt
+from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator
 
 
@@ -108,6 +111,7 @@ class PLS(BaseEstimator):
         self.Y_mean = None
         self.X_std = None
         self.Y_std = None
+        self.max_stable_components = None
 
     def _weight_warning(self, i: int) -> None:
         """
@@ -122,14 +126,20 @@ class PLS(BaseEstimator):
         -------
         None.
         """
-        with warnings.catch_warnings():
-            warnings.simplefilter("always", UserWarning)
-            warnings.warn(
-                f"Weight is close to zero. Results with A = {i} component(s) or higher"
-                " may be unstable."
-            )
+        warnings.warn(
+            message=f"Weight is close to zero. Results with A = {i + 1} "
+            "component(s) or higher may be unstable.",
+            category=UserWarning,
+        )
+        self.max_stable_components = i
 
-    def fit(self, X: npt.ArrayLike, Y: npt.ArrayLike, A: int) -> None:
+    def fit(
+        self,
+        X: npt.ArrayLike,
+        Y: npt.ArrayLike,
+        A: int,
+        weights: Union[None, npt.ArrayLike] = None,
+    ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -144,8 +154,19 @@ class PLS(BaseEstimator):
         A : int
             Number of components in the PLS model.
 
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
         Attributes
         ----------
+        A : int
+            Number of components in the PLS model.
+
+        max_stable_components : int
+            Maximum number of components that can be used without the residual going
+            below machine epsilon.
+
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
 
@@ -165,16 +186,20 @@ class PLS(BaseEstimator):
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
 
         X_mean : Array of shape (1, K) or None
-            Mean of X. If centering is not performed, this is None.
+            Mean of X. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
 
         Y_mean : Array of shape (1, M) or None
-            Mean of Y. If centering is not performed, this is None.
+            Mean of Y. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
 
         X_std : Array of shape (1, K) or None
             Sample standard deviation of X. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
 
         Y_std : Array of shape (1, M) or None
             Sample standard deviation of Y. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
 
         Returns
         -------
@@ -192,32 +217,71 @@ class PLS(BaseEstimator):
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
 
+        N, K = X.shape
+        M = Y.shape[1]
+
+        if weights is not None:
+            weights = np.asarray(weights, dtype=self.dtype)
+            weights = np.reshape(weights, (-1, 1))
+            flattened_weights = weights.flatten()
+            if self.scale_X or self.scale_Y:
+                num_non_zero_weights = np.asarray(
+                    np.count_nonzero(weights), dtype=self.dtype
+                )
+                scale_dof = num_non_zero_weights - 1
+                avg_non_zero_weights = np.sum(weights) / num_non_zero_weights
+        else:
+            flattened_weights = None
+
         if (self.center_X or self.scale_X) and self.copy:
             X = X.copy()
 
         if (self.center_Y or self.scale_Y) and self.copy:
             Y = Y.copy()
 
+        if self.center_X or self.scale_X:
+            self.X_mean = np.asarray(
+                np.average(X, axis=0, weights=flattened_weights, keepdims=True),
+                dtype=self.dtype,
+            )
         if self.center_X:
-            self.X_mean = X.mean(axis=0, dtype=self.dtype, keepdims=True)
             X -= self.X_mean
 
+        if self.center_Y or self.scale_Y:
+            self.Y_mean = np.asarray(
+                np.average(Y, axis=0, weights=flattened_weights, keepdims=True),
+                dtype=self.dtype,
+            )
         if self.center_Y:
-            self.Y_mean = Y.mean(axis=0, dtype=self.dtype, keepdims=True)
             Y -= self.Y_mean
 
         if self.scale_X:
-            self.X_std = X.std(axis=0, ddof=1, dtype=self.dtype, keepdims=True)
+            new_X_mean = 0 if self.center_X else self.X_mean
+            if weights is None:
+                self.X_std = X.std(
+                    axis=0, ddof=1, dtype=self.dtype, keepdims=True, mean=new_X_mean
+                )
+            else:
+                self.X_std = np.sqrt(
+                    np.sum(weights * (X - new_X_mean) ** 2, axis=0, keepdims=True)
+                    / (scale_dof * avg_non_zero_weights)
+                )
             self.X_std[np.abs(self.X_std) <= self.eps] = 1
             X /= self.X_std
 
         if self.scale_Y:
-            self.Y_std = Y.std(axis=0, ddof=1, dtype=self.dtype, keepdims=True)
+            new_Y_mean = 0 if self.center_Y else self.Y_mean
+            if weights is None:
+                self.Y_std = Y.std(
+                    axis=0, ddof=1, dtype=self.dtype, keepdims=True, mean=new_Y_mean
+                )
+            else:
+                self.Y_std = np.sqrt(
+                    np.sum(weights * (Y - new_Y_mean) ** 2, axis=0, keepdims=True)
+                    / (scale_dof * avg_non_zero_weights)
+                )
             self.Y_std[np.abs(self.Y_std) <= self.eps] = 1
             Y /= self.Y_std
-
-        N, K = X.shape
-        M = Y.shape[1]
 
         self.B = np.zeros(shape=(A, K, M), dtype=self.dtype)
         W = np.zeros(shape=(A, K), dtype=self.dtype)
@@ -232,16 +296,30 @@ class PLS(BaseEstimator):
             T = np.zeros(shape=(A, N), dtype=self.dtype)
             self.T = T.T
         self.A = A
+        self.max_stable_components = A
         self.N = N
         self.K = K
         self.M = M
 
         # Step 1
-        XTY = X.T @ Y
+        if weights is not None:
+            if self.algorithm == 2 or K < M:
+                XTW = (X * weights).T
+                XTY = XTW @ Y
+            else:
+                XTY = X.T @ (Y * weights)
+        else:
+            XTY = X.T @ Y
 
         # Used for algorithm #2
         if self.algorithm == 2:
-            XTX = X.T @ X
+            if weights is not None:
+                XTX = XTW @ X
+            else:
+                XTX = X.T @ X
+        else:
+            if weights is not None:
+                X = np.sqrt(weights) * X
 
         for i in range(A):
             # Step 2
@@ -302,9 +380,8 @@ class PLS(BaseEstimator):
         self, X: npt.ArrayLike, n_components: Union[None, int] = None
     ) -> npt.NDArray[np.floating]:
         """
-        Predicts with Improved Kernel PLS Algorithm #1 on `X` with `B` using
-        `n_components` components. If `n_components` is None, then predictions are
-        returned for all number of components.
+        Predicts on `X` with `B` using `n_components` components. If `n_components` is
+        None, then predictions are returned for each individual number of components.
 
         Parameters
         ----------
@@ -312,8 +389,8 @@ class PLS(BaseEstimator):
             Predictor variables.
 
         n_components : int or None, optional, default=None.
-            Number of components in the PLS model. If None, then all number of
-            components are used.
+            Number of components in the PLS model. If None, then each individual number
+            of components is used.
 
         Returns
         -------
@@ -339,3 +416,208 @@ class PLS(BaseEstimator):
         if self.center_Y:
             Y_pred = Y_pred + self.Y_mean
         return Y_pred
+
+    def cross_validate(
+        self,
+        X: npt.ArrayLike,
+        Y: npt.ArrayLike,
+        A: int,
+        cv_splits: Iterable[Hashable],
+        metric_function: Union[
+            Callable[
+                [
+                    npt.NDArray[np.floating],
+                    npt.NDArray[np.floating],
+                    npt.NDArray[np.floating],
+                ],
+                Any,
+            ],
+            Callable[
+                [
+                    npt.NDArray[np.floating],
+                    npt.NDArray[np.floating],
+                ],
+                Any,
+            ],
+        ],
+        preprocessing_function: Union[
+            None,
+            Union[
+                Callable[
+                    [
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                    ],
+                    Tuple[
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                    ],
+                ],
+                Callable[
+                    [
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                    ],
+                    Tuple[
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                        npt.NDArray[np.floating],
+                    ],
+                ],
+            ],
+        ] = None,
+        weights: Union[None, npt.ArrayLike] = None,
+        n_jobs: int = -1,
+        verbose: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Performs cross-validation for the Partial Least-Squares (PLS) model on given
+        data. `preprocessing_function` will be applied before any potential centering
+        and scaling as determined by `self.center_X`, `self.center_Y`, `self.scale_X`,
+        and `self.scale_Y`. Any such potential centering and scaling is applied for
+        each split using training set statistics to avoid data leakage from the
+        validation set. If `weights` are provided, then these will be provided in
+        `preprocessing_function` and `metric_function` and used for any centering and
+        scaling in the cross-validation procedure.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K)
+            Predictor variables.
+
+        Y : Array of shape (N, M) or (N,)
+            Response variables.
+
+        A : int
+            Number of components in the PLS model.
+
+        cv_splits : Iterable of Hashable with N elements
+            An iterable defining cross-validation splits. Each unique value in
+            `cv_splits` corresponds to a different fold.
+
+        metric_function : Callable receiving arrays `Y_val`, `Y_pred`, and, if
+        `weights` is not None, also, `weights_test`, and returning Any.
+            Computes a metric based on true values `Y_val` and predicted values
+            `Y_pred`. `Y_pred` contains a prediction for all `A` components.
+
+        preprocessing_function : Callable or None, optional, default=None,
+        If Callable, it should receive arrays `X_train`, `Y_train`, `X_val`, `Y_val`,
+        and, if `weights` is not None, also `weights_train`, and `weights_val`, and
+        returning a Tuple of preprocessed `X_train`, `Y_train`, `X_val`, and `Y_val`.
+            A function that preprocesses the training and validation data for each
+            fold. It should return preprocessed arrays for `X_train`, `Y_train`,
+            `X_val`, and `Y_val`.
+
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        n_jobs : int, optional default=-1
+            Number of parallel jobs to use. A value of -1 will use the minimum of all
+            available cores and the number of unique values in `cv_splits`.
+
+        verbose : int, optional default=10
+            Controls verbosity of parallel jobs.
+
+        Returns
+        -------
+        metrics : dict[str, Any]
+            A dictionary containing evaluation metrics for each metric specified in
+            `metric_names`. The keys are metric names, and the values are lists of
+            metric values for each cross-validation fold.
+
+        Notes
+        -----
+        This method is used to perform cross-validation on the PLS model with different
+        data splits and evaluate its performance using user-defined metrics.
+        """
+        X = np.asarray(X, dtype=self.dtype)
+        Y = np.asarray(Y, dtype=self.dtype)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+
+        if weights is not None:
+            weights = np.asarray(weights, dtype=self.dtype)
+            weights = np.reshape(weights, (-1, 1))
+            weights = weights.squeeze()
+
+        folds_dict = self._init_folds_dict(cv_splits)
+        num_splits = len(folds_dict)
+        all_indices = np.arange(X.shape[0])
+
+        if n_jobs == -1:
+            n_jobs = min(num_splits, joblib.cpu_count())
+        else:
+            n_jobs = min(num_splits, n_jobs)
+
+        def worker(val_indices: npt.NDArray[np.int_]) -> Any:
+            train_indices = np.setdiff1d(all_indices, val_indices, assume_unique=True)
+            X_train = X[train_indices]
+            Y_train = Y[train_indices]
+            X_val = X[val_indices]
+            Y_val = Y[val_indices]
+            if weights is not None:
+                weights_train = weights[train_indices]
+                weights_val = weights[val_indices]
+            else:
+                weights_train = None
+                weights_val = None
+
+            if preprocessing_function is not None:
+                if weights is not None:
+                    X_train, Y_train, X_val, Y_val = preprocessing_function(
+                        X_train, Y_train, X_val, Y_val, weights_train, weights_val
+                    )
+                else:
+                    X_train, Y_train, X_val, Y_val = preprocessing_function(
+                        X_train, Y_train, X_val, Y_val
+                    )
+
+            self.fit(X_train, Y_train, A, weights_train)
+            Y_pred = self.predict(X_val, n_components=None)
+            if weights is not None:
+                return metric_function(Y_val, Y_pred, weights_val)
+            return metric_function(Y_val, Y_pred)
+
+        metrics_list = Parallel(n_jobs=n_jobs, verbose=verbose)(
+            delayed(worker)(val_indices) for val_indices in folds_dict.values()
+        )
+        metrics_dict = dict(zip(folds_dict.keys(), metrics_list))
+        return metrics_dict
+
+    def _init_folds_dict(
+        self, cv_splits: Iterable[Hashable]
+    ) -> dict[Hashable, npt.NDArray[np.int_]]:
+        """
+        Generates a list of validation indices for each fold in `cv_splits`.
+
+        Parameters
+        ----------
+        cv_splits : Iterable of Hashable with N elements
+            An iterable defining cross-validation splits. Each unique value in
+            `cv_splits` corresponds to a different fold.
+
+        Returns
+        -------
+        index_dict : dict of Hashable to Array
+            A dictionary mapping each unique value in `cv_splits` to an array of
+            validation indices.
+        """
+        index_dict = {}
+        for i, num in enumerate(cv_splits):
+            try:
+                index_dict[num].append(i)
+            except KeyError:
+                index_dict[num] = [i]
+        for key in index_dict:
+            index_dict[key] = np.asarray(index_dict[key], dtype=int)
+        return index_dict

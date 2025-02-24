@@ -16,7 +16,9 @@ from timings.timings import (
 )
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -39,14 +41,19 @@ def main():
     parser.add_argument("-n", type=int, help="Number of samples to generate.")
     parser.add_argument("-k", type=int, help="Number of features to generate.")
     parser.add_argument("-m", type=int, help="Number of targets to generate.")
-    parser.add_argument("-o", "--output", type=str, default="timings/user_timings.csv",
-                        help="Output file to write timings to.")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default="timings/user_timings.csv",
+        help="Output file to write timings to.",
+    )
     parser.add_argument(
         "--estimate",
         dest="estimate",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="Estimate the time taken to do a full cross-validation based on the time taken to execute only 2*n_jobs cross-validation splits."
+        help="Estimate the time taken to do a full cross-validation based on the time taken to execute only 2*n_jobs cross-validation splits.",
     )
     args = parser.parse_args()
     config = vars(args)
@@ -61,18 +68,34 @@ def main():
     X, Y = gen_random_data(n, k, m)
     if "jax" in model:
         if model == "jax1":
-            pls = JAX_PLS_Alg_1(center_X=False, center_Y=False, scale_X=False, scale_Y=False)
+            pls = JAX_PLS_Alg_1(
+                center_X=False, center_Y=False, scale_X=False, scale_Y=False
+            )
             name = "JAX Improved Kernel PLS Algorithm #1"
         elif model == "jax2":
-            pls = JAX_PLS_Alg_2(center_X=False, center_Y=False, scale_X=False, scale_Y=False)
+            pls = JAX_PLS_Alg_2(
+                center_X=False, center_Y=False, scale_X=False, scale_Y=False
+            )
             name = "JAX Improved Kernel PLS Algorithm #2"
         elif model == "diffjax1":
-            pls = JAX_PLS_Alg_1(center_X=False, center_Y=False, scale_X=False, scale_Y=False, reverse_differentiable=True)
+            pls = JAX_PLS_Alg_1(
+                center_X=False,
+                center_Y=False,
+                scale_X=False,
+                scale_Y=False,
+                differentiable=True,
+            )
             name = (
                 "JAX Improved Kernel PLS Algorithm #1 (backwards mode differentiable)"
             )
         elif model == "diffjax2":
-            pls = JAX_PLS_Alg_2(center_X=False, center_Y=False, scale_X=False, scale_Y=False, reverse_differentiable=True)
+            pls = JAX_PLS_Alg_2(
+                center_X=False,
+                center_Y=False,
+                scale_X=False,
+                scale_Y=False,
+                reverse_differentiable=True,
+            )
             name = (
                 "JAX Improved Kernel PLS Algorithm #2 (backwards mode differentiable)"
             )
@@ -95,21 +118,45 @@ def main():
         n_jobs = config["n_jobs"]
         if model == "sk":
             pls = SK_PLS_All_Components(n_components=n_components)
-            fit_params = {} if n_splits == 1 else None
+            params = {} if n_splits == 1 else None
             name = "scikit-learn NIPALS"
         elif model == "np1":
-            pls = NP_PLS(center_X=False, center_Y=False, scale_X=False, scale_Y=False, algorithm=1)
-            fit_params = {"A": n_components}
+            pls = NP_PLS(
+                center_X=False,
+                center_Y=False,
+                scale_X=False,
+                scale_Y=False,
+                algorithm=1,
+            )
+            params = {"A": n_components}
             name = "NumPy Improved Kernel PLS Algorithm #1"
         elif model == "np2":
-            pls = NP_PLS(center_X=False, center_Y=False, scale_X=False, scale_Y=False, algorithm=2)
-            fit_params = {"A": n_components}
+            pls = NP_PLS(
+                center_X=False,
+                center_Y=False,
+                scale_X=False,
+                scale_Y=False,
+                algorithm=2,
+            )
+            params = {"A": n_components}
             name = "NumPy Improved Kernel PLS Algorithm #2"
         elif model == "fastnp1":
-            pls = NP_PLS_FCV(center_X=False, center_Y=False, scale_X=False, scale_Y=False, algorithm=1)
+            pls = NP_PLS_FCV(
+                center_X=False,
+                center_Y=False,
+                scale_X=False,
+                scale_Y=False,
+                algorithm=1,
+            )
             name = "NumPy Improved Kernel PLS Algorithm #1 (fast cross-validation)"
         elif model == "fastnp2":
-            pls = NP_PLS_FCV(center_X=False, center_Y=False, scale_X=False, scale_Y=False, algorithm=2)
+            pls = NP_PLS_FCV(
+                center_X=False,
+                center_Y=False,
+                scale_X=False,
+                scale_Y=False,
+                algorithm=2,
+            )
             name = "NumPy Improved Kernel PLS Algorithm #2 (fast cross-validation)"
         else:
             raise ValueError(
@@ -120,7 +167,7 @@ def main():
             print(
                 f"Fitting {name} with {n_components} components on {n} samples with {k} features and {m} targets."
             )
-            time = single_fit_cpu_pls(pls, X, Y, fit_params)
+            time = single_fit_cpu_pls(pls, X, Y, params)
         else:
             fitting_or_estimating = "Estimating" if estimate else "Fitting"
             print(
@@ -128,18 +175,33 @@ def main():
             )
             if model.startswith("fast"):
                 if estimate:
-                    raise ValueError("Estimation is not supported for fast cross-validation.")
+                    raise ValueError(
+                        "Estimation is not supported for fast cross-validation."
+                    )
                 time = fast_cross_val_cpu_pls(
-                    pls, X, Y, n_components, n_splits=n_splits, n_jobs=n_jobs, verbose=1,
+                    pls,
+                    X,
+                    Y,
+                    n_components,
+                    n_splits=n_splits,
+                    n_jobs=n_jobs,
+                    verbose=1,
                 )
             else:
                 time = cross_val_cpu_pls(
-                    pls, X, Y, n_splits, fit_params, n_jobs=n_jobs, verbose=1, estimate=estimate
+                    pls,
+                    X,
+                    Y,
+                    n_splits,
+                    params,
+                    n_jobs=n_jobs,
+                    verbose=1,
+                    estimate=estimate,
                 )
         print(f"Time: {time}")
 
     if "jax" in model:
-        num_cores = 'GPU'
+        num_cores = "GPU"
     else:
         num_cores = os.cpu_count() if n_jobs == -1 else n_jobs
 
@@ -151,6 +213,7 @@ def main():
         f.write(
             f"{model},{n_components},{n_splits},{n},{k},{m},{time},{estimate},{num_cores}\n"
         )
+
 
 if __name__ == "__main__":
     try:

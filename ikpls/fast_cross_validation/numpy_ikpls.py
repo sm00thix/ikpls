@@ -12,7 +12,8 @@ E-mail: ole.e@di.ku.dk
 """
 
 import warnings
-from typing import Any, Callable, Hashable, Iterable, Union
+from collections.abc import Callable, Hashable
+from typing import Any, Iterable, Union
 
 import joblib
 import numpy as np
@@ -30,6 +31,9 @@ class PLS:
 
     Parameters
     ----------
+    algorithm : int, default=1
+        Whether to use Improved Kernel PLS Algorithm #1 or #2.
+
     center_X : bool, optional default=True
         Whether to center `X` before fitting by subtracting its row of
         column-wise means from each row. The row of column-wise means is computed on
@@ -51,9 +55,6 @@ class PLS:
         column-wise standard deviations. Bessel's correction for the unbiased estimate
         of the sample standard deviation is used. The row of column-wise standard
         deviations is computed on the training set for each fold to avoid data leakage.
-
-    algorithm : int, default=1
-        Whether to use Improved Kernel PLS Algorithm #1 or #2.
 
     dtype : numpy.float, default=numpy.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
@@ -127,12 +128,11 @@ class PLS:
         i : int
             The current number of components.
         """
-        with warnings.catch_warnings():
-            warnings.simplefilter("always", UserWarning)
-            warnings.warn(
-                f"Weight is close to zero. Results with A = {i} component(s) or higher"
-                " may be unstable."
-            )
+        warnings.warn(
+            message=f"Weight is close to zero. Results with A = {i + 1} "
+            "component(s) or higher may be unstable.",
+            category=UserWarning,
+        )
 
     def _stateless_fit(
         self,
@@ -314,9 +314,9 @@ class PLS:
 
         # If algorithm is 1, extract training set X
         if self.algorithm == 1:
-            training_indices = np.setdiff1d(self.all_indices,
-                                            validation_indices,
-                                            assume_unique=True)
+            training_indices = np.setdiff1d(
+                self.all_indices, validation_indices, assume_unique=True
+            )
             training_X = self.X[training_indices]
             if self.center_X:
                 # Apply the training set centering
@@ -543,7 +543,7 @@ class PLS:
         )
         return metric_function(self.Y[validation_indices], Y_pred)
 
-    def _generate_validation_indices_dict(
+    def _init_folds_dict(
         self, cv_splits: Iterable[Hashable]
     ) -> dict[Hashable, npt.NDArray[np.int_]]:
         """
@@ -634,8 +634,8 @@ class PLS:
         self.A = A
         self.N, self.K = X.shape
         self.M = self.Y.shape[1]
-        validation_indices_dict = self._generate_validation_indices_dict(cv_splits)
-        num_splits = len(validation_indices_dict)
+        folds_dict = self._init_folds_dict(cv_splits)
+        num_splits = len(folds_dict)
 
         if self.algorithm == 1:
             self.all_indices = np.arange(self.N, dtype=int)
@@ -678,19 +678,15 @@ class PLS:
             if verbose > 0:
                 print("Done!")
 
-        def worker(validation_indices: npt.NDArray[np.int_],
-                   metric_function: Callable[[npt.ArrayLike, npt.ArrayLike], Any]
-                   ) -> Any:
-            return self._stateless_fit_predict_eval(
-                    validation_indices,
-                    metric_function
-                   )
+        def worker(
+            validation_indices: npt.NDArray[np.int_],
+            metric_function: Callable[[npt.ArrayLike, npt.ArrayLike], Any],
+        ) -> Any:
+            return self._stateless_fit_predict_eval(validation_indices, metric_function)
 
         metrics_list = Parallel(n_jobs=n_jobs, verbose=verbose)(
             delayed(worker)(validation_indices, metric_function)
-            for validation_indices in validation_indices_dict.values()
+            for validation_indices in folds_dict.values()
         )
-
-        metrics_dict = dict(zip(validation_indices_dict.keys(), metrics_list))
-
+        metrics_dict = dict(zip(folds_dict.keys(), metrics_list))
         return metrics_dict

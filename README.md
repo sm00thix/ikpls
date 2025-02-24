@@ -18,6 +18,10 @@
 
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
 
+## NEW IN 2.0.0: Weighted IKPLS
+The `ikpls` software package now also features sample-weighted PLS as described by [Becker and Ismail](https://doi.org/10.1016/j.emj.2016.06.009). Becker and Ismail use an erroneous computation of the weighted variance. `ikpls` corrects this.
+Both NumPy and JAX implementations allow for weighted cross-validation with their respective `cross_validate` methods.
+
 ## Citation
 If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533). If you use the fast cross-validation algorithm implemented in `ikpls.fast_cross_validation.numpy_ikpls`, please also cite [this arXiv preprint](https://arxiv.org/abs/2401.13185).
 
@@ -159,7 +163,7 @@ will find:
 -   [Fit and Predict with
     JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
 -   [Cross-validate with
-    NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy.py)
+    NumPy and scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy_sklearn.py)
 -   [Cross-validate with NumPy and fast
     cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_numpy.py)
 -   [Cross-validate with
@@ -168,6 +172,10 @@ will find:
     respect to the RMSE between the target value and the value predicted
     by PLS after fitting with
     JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/gradient_jax.py)
+-   [Weighted Fit and Predict with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_fit_predict_numpy.py)
+-   [Weighted Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
+-   [Weighted cross-validation with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_numpy.py)
+-   [Weighted cross-validation with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_jax.py)
 
 ## Contribute
 
@@ -187,3 +195,7 @@ Guidelines](https://github.com/Sm00thix/IKPLS/blob/main/CONTRIBUTING.md).
     $\mathbf{X}^\mathbf{T}\mathbf{X}$ and
     $\mathbf{X}^\mathbf{T}\mathbf{Y}$ Without Full
     Recomputation of Matrix Products or Statistical Moments](https://arxiv.org/abs/2401.13185)
+
+
+## Funding
+This work has been carried out as part of an industrial Ph. D. project receiving funding from [FOSS Analytical A/S](https://www.fossanalytics.com/) and [The Innovation Fund Denmark](https://innovationsfonden.dk/en). Grant number 1044-00108B.

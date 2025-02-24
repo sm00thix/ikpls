@@ -6,8 +6,8 @@ preprocessing, metric computation, and evaluation.
 The code includes the following functions:
 - `cross_val_preprocessing`: A function to apply preprocessing to each split of the
     cross-validation.
-- `mse_per_component_and_best_components`: A function to compute the mean squared error
-    per component and the best number of components.
+- `wmse_per_component_and_best_components`: A function to compute the mean squared
+    error per component and the best number of components.
 
 To run the cross-validation, execute the file.
 
@@ -32,6 +32,8 @@ def cross_val_preprocessing(
     Y_train: jnp.ndarray,
     X_val: jnp.ndarray,
     Y_val: jnp.ndarray,
+    train_weights: jnp.ndarray,
+    val_weights: jnp.ndarray,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Apply preprocessing to each split of the cross-validation. Here, we just use the
@@ -43,9 +45,10 @@ def cross_val_preprocessing(
     return X_train, Y_train, X_val, Y_val
 
 
-def mse_per_component_and_best_components(
+def wmse_per_component_and_best_components(
     Y_true: jnp.ndarray,
     Y_pred: jnp.ndarray,
+    val_weights: jnp.ndarray,
 ) -> jnp.ndarray:
     """
     Compute the mean squared error per component and the best number of components.
@@ -56,9 +59,9 @@ def mse_per_component_and_best_components(
     # Y_true has shape (N, M), Y_pred has shape (A, N, M).
     e = Y_true - Y_pred  # Shape (A, N, M)
     se = e**2  # Shape (A, N, M)
-    mse = jnp.mean(se, axis=-2)  # Shape (A, M)
-    best_num_components = jnp.argmin(mse, axis=0) + 1  # Shape (M,)
-    return (mse, best_num_components)
+    wmse = jnp.average(se, axis=-2, weights=val_weights)  # Shape (A, M)
+    best_num_components = jnp.argmin(wmse, axis=0) + 1  # Shape (M,)
+    return (wmse, best_num_components)
 
 
 if __name__ == "__main__":
@@ -75,6 +78,7 @@ if __name__ == "__main__":
 
     X = np.random.uniform(size=(N, K)).astype(np.float64)
     Y = np.random.uniform(size=(N, M)).astype(np.float64)
+    weights = np.random.uniform(low=0, high=2, size=(N,)).astype(np.float64)
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -82,32 +86,32 @@ if __name__ == "__main__":
     # training splits only to avoid data leakage from the validation splits.
     jax_pls_alg_1 = PLS(verbose=True)
 
-    metric_names = ["mse", "best_num_components"]
+    metric_names = ["wmse", "best_num_components"]
     metric_values_dict = jax_pls_alg_1.cross_validate(
         X,
         Y,
         A,
         cv_splits=splits,
         preprocessing_function=cross_val_preprocessing,
-        metric_function=mse_per_component_and_best_components,
+        metric_function=wmse_per_component_and_best_components,
         metric_names=metric_names,
-        weights=None,
+        weights=weights,
     )
 
     """
     list of length 5 where each element is an array of shape (A, M) = (20, 10)
-    corresponding to the mse output of mse_per_component_and_best_components for each
+    corresponding to the mse output of wmse_per_component_and_best_components for each
     split.
     """
-    mse_for_each_split = metric_values_dict["mse"]
+    wmse_for_each_split = metric_values_dict["wmse"]
 
     # shape (n_splits, A, M) = (5, 20, 10)
-    mse_for_each_split = np.array(mse_for_each_split)
+    wmse_for_each_split = np.array(wmse_for_each_split)
 
     """
     list of length 5 where each element is an array of shape (M,) = (10,)
     corresponding to the best_num_components output of
-    mse_per_component_and_best_components for each split.
+    wmse_per_component_and_best_components for each split.
     """
     best_num_components_for_each_split = metric_values_dict["best_num_components"]
 
@@ -117,19 +121,19 @@ if __name__ == "__main__":
     """
     # The -1 in the index is due to the fact that mse_for_each_split is 0-indexed but
     the number of components go from 1 to A. This could also have been implemented
-    using jax.numpy in mse_per_component_and_best_components directly as part of the
+    using jax.numpy in wmse_per_component_and_best_components directly as part of the
     metric function.
     """
     # (n_splits, M) shape (5, 10)
-    best_mse_for_each_split = np.amin(mse_for_each_split, axis=-2)
+    best_wmse_for_each_split = np.amin(wmse_for_each_split, axis=-2)
 
     # shape (n_splits, M) = (5, 10)
     equivalent_best_mse_for_each_split = np.array(
         [
-            mse_for_each_split[
+            wmse_for_each_split[
                 i, best_num_components_for_each_split[i] - 1, np.arange(M)
             ]
             for i in range(len(best_num_components_for_each_split))
         ]
     )
-    (best_mse_for_each_split == equivalent_best_mse_for_each_split).all()  # True
+    (best_wmse_for_each_split == equivalent_best_mse_for_each_split).all()  # True

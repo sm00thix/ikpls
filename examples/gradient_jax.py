@@ -97,7 +97,7 @@ if __name__ == "__main__":
     filter_size = 7  # Filter size for convolution
     conv_filter = jnp.array(np.random.rand(filter_size))  # Random filter
 
-    diff_pls_alg_1 = JAX_Alg_1(reverse_differentiable=True, verbose=True)
+    diff_pls_alg_1 = JAX_Alg_1(differentiable=True, verbose=True)
 
     # Compute values and gradients for the conv_filter using mean squared error as the
     # loss function and IKPLS Algorithm #1 as the PLS algorithm with exactly 20
