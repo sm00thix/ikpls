@@ -31,6 +31,9 @@ class PLS:
 
     Parameters
     ----------
+    algorithm : int, default=1
+        Whether to use Improved Kernel PLS Algorithm #1 or #2.
+
     center_X : bool, optional default=True
         Whether to center `X` before fitting by subtracting its row of
         column-wise means from each row. The row of column-wise means is computed on
@@ -52,9 +55,6 @@ class PLS:
         column-wise standard deviations. Bessel's correction for the unbiased estimate
         of the sample standard deviation is used. The row of column-wise standard
         deviations is computed on the training set for each fold to avoid data leakage.
-
-    algorithm : int, default=1
-        Whether to use Improved Kernel PLS Algorithm #1 or #2.
 
     dtype : numpy.float, default=numpy.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
