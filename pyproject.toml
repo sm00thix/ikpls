@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ikpls"
-version = "2.0.0"
+version = "3.0.0"
 description = "Improved Kernel PLS and Fast Cross-Validation."
 authors = ["sm00thix <oleemail@icloud.com>"]
 maintainers = ["sm00thix <oleemail@icloud.com>"]
@@ -17,6 +17,7 @@ jaxlib = ">=0.5.0"
 scikit-learn = ">=1.5.0"
 tqdm = ">=4.66.1"
 joblib = ">=1.3.2"
+cvmatrix = ">=3.0.0"
 
 [build-system]
 requires = ["poetry-core"]

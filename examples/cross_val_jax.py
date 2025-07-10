@@ -14,7 +14,7 @@ To run the cross-validation, execute the file.
 Note: The code assumes the availability of the `ikpls` package and its dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 from typing import Tuple
@@ -71,10 +71,10 @@ if __name__ == "__main__":
     K = 50  # Number of features.
     M = 10  # Number of targets.
     A = 20  # Number of latent variables (PLS components).
-    splits = np.arange(100) % 5  # Randomly assign each sample to one of 5 splits.
+    folds = np.arange(100) % 5  # Randomly assign each sample to one of 5 splits.
 
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         X,
         Y,
         A,
-        cv_splits=splits,
+        folds=folds,
         preprocessing_function=cross_val_preprocessing,
         metric_function=mse_per_component_and_best_components,
         metric_names=metric_names,

@@ -13,7 +13,7 @@ To run the cross-validation, execute the file.
 Note: The code assumes the availability of the `ikpls` package and its dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import numpy as np
@@ -66,19 +66,19 @@ if __name__ == "__main__":
     )  # Randomly assign each sample to one of 5 splits.
     number_of_splits = np.unique(splits).shape[0]
 
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
     # Centering and scaling are enabled by default and computed over the
     # training splits only to avoid data leakage from the validation splits.
-    np_pls_alg_1_fast_cv = PLS(algorithm=1)
+    np_pls_alg_1_fast_cv = PLS(algorithm=2)
     np_pls_alg_1_fast_cv_results = np_pls_alg_1_fast_cv.cross_validate(
         X=X,
         Y=Y,
         A=A,
-        cv_splits=splits,
+        folds=splits,
         metric_function=mse_for_each_target,
         n_jobs=-1,
         verbose=10,
@@ -95,7 +95,7 @@ if __name__ == "__main__":
     lowest_val_mses = np.asarray(
         [
             [
-                np_pls_alg_1_fast_cv_results[split][f'lowest_mse_target_{i}']
+                np_pls_alg_1_fast_cv_results[split][f"lowest_mse_target_{i}"]
                 for split in unique_splits
             ]
             for i in range(M)
@@ -107,8 +107,9 @@ if __name__ == "__main__":
     best_num_components = np.asarray(
         [
             [
-                np_pls_alg_1_fast_cv_results[split]
-                [f'num_components_lowest_mse_target_{i}']
+                np_pls_alg_1_fast_cv_results[split][
+                    f"num_components_lowest_mse_target_{i}"
+                ]
                 for split in unique_splits
             ]
             for i in range(M)

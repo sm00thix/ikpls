@@ -12,6 +12,10 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from collections.abc import Callable
 from itertools import product
 from typing import List, Optional, Tuple, Union
@@ -30,6 +34,7 @@ from ikpls.fast_cross_validation.numpy_ikpls import PLS as FastCVPLS
 from ikpls.jax_ikpls_alg_1 import PLS as JAX_Alg_1
 from ikpls.jax_ikpls_alg_2 import PLS as JAX_Alg_2
 from ikpls.numpy_ikpls import PLS as NpPLS
+
 from . import load_data
 
 # Allow JAX to use 64-bit floating point precision.
@@ -326,6 +331,7 @@ class TestClass:
         scale_X: bool,
         scale_Y: bool,
         fast_cv: bool,
+        ddof=1,
     ):
         """
         Description
@@ -362,6 +368,7 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
         )
         np_pls_alg_2 = NpPLS(
             algorithm=2,
@@ -369,12 +376,14 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
         )
         jax_pls_alg_1 = JAX_Alg_1(
             center_X=center_X,
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
             differentiable=False,
             verbose=True,
         )
@@ -383,6 +392,7 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
             differentiable=False,
             verbose=True,
         )
@@ -391,6 +401,7 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
             differentiable=True,
             verbose=True,
         )
@@ -399,6 +410,7 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
             differentiable=True,
             verbose=True,
         )
@@ -410,6 +422,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
+                ddof=ddof,
             )
             fast_cv_pls_alg_2 = FastCVPLS(
                 algorithm=2,
@@ -417,6 +430,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
+                ddof=ddof,
             )
             return (
                 np_pls_alg_1,
@@ -537,7 +551,11 @@ class TestClass:
 
     @staticmethod
     def jax_rmse_per_component(
-        Y_true: jnp.ndarray, Y_pred: jnp.ndarray, *args, **kwargs
+        Y_true: jnp.ndarray,
+        Y_pred: jnp.ndarray,
+        weights: Union[None, jnp.ndarray] = None,
+        *args,
+        **kwargs,
     ) -> jnp.ndarray:
         """
         Description
@@ -561,12 +579,18 @@ class TestClass:
             Y_true = Y_true.reshape(-1, 1)
         e = Y_true - Y_pred
         se = e**2
-        mse = jnp.mean(se, axis=-2)
+        if weights is not None:
+            weights = weights.flatten()
+        mse = jnp.average(se, axis=-2, weights=weights)
         rmse = jnp.sqrt(mse)
         return rmse
 
     @staticmethod
-    def rmse_per_component(Y_true: npt.NDArray, Y_pred: npt.NDArray) -> npt.NDArray:
+    def rmse_per_component(
+        Y_true: npt.NDArray,
+        Y_pred: npt.NDArray,
+        weights: Union[None, np.ndarray] = None,
+    ) -> npt.NDArray:
         """
         Description
         -----------
@@ -589,7 +613,9 @@ class TestClass:
             Y_true = Y_true.reshape(-1, 1)
         e = Y_true - Y_pred
         se = e**2
-        mse = np.mean(se, axis=-2)
+        if weights is not None:
+            weights = weights.flatten()
+        mse = np.average(se, axis=-2, weights=weights)
         rmse = np.sqrt(mse)
         return rmse
 
@@ -615,6 +641,50 @@ class TestClass:
             train_idxs = np.nonzero(splits != split)[0]
             val_idxs = np.nonzero(splits == split)[0]
             yield train_idxs, val_idxs
+
+    @staticmethod
+    def _snv(arr: npt.NDArray) -> npt.NDArray:
+        """
+        Description
+        -----------
+        Perform standard normal variate (SNV) scaling on the input array.
+
+        Parameters
+        ----------
+        arr : Array of shape (N, K)
+            Input data (spectra).
+
+        Returns
+        -------
+        Array of shape (N, K)
+            SNV-scaled data.
+        """
+        arr_mean = np.mean(arr, axis=1, keepdims=True)
+        arr_std = np.std(arr, axis=1, ddof=1, keepdims=True)
+        arr_std[arr_std <= np.finfo(np.float64).eps] = 1
+        return (arr - arr_mean) / arr_std
+
+    @staticmethod
+    def _jax_snv(arr: jnp.ndarray) -> jnp.ndarray:
+        """
+        Description
+        -----------
+        Perform standard normal variate (SNV) scaling on the input array using JAX.
+
+        Parameters
+        ----------
+        arr : Array of shape (N, K)
+            Input data (spectra).
+
+        Returns
+        -------
+        Array of shape (N, K)
+            SNV-scaled data.
+        """
+        arr_mean = jnp.mean(arr, axis=1, keepdims=True)
+        arr_std = jnp.std(arr, axis=1, ddof=1, keepdims=True)
+        arr_std = jnp.where(arr_std <= np.finfo(np.float64).eps, 1, arr_std)
+        return (arr - arr_mean) / arr_std
 
     @staticmethod
     def snv(
@@ -647,32 +717,35 @@ class TestClass:
 
         Returns
         -------
-        X_snv : Array of shape (N_train, K)
+        X_train_snv : Array of shape (N_train, K)
             SNV-scaled training data.
 
         Y_train : Array of shape (N_train, M)
             Unchanged training target values.
 
-        X_val : Array of shape (N_val, K)
+        X_val_snv : Array of shape (N_val, K)
             SNV-scaled validation data.
 
         Y_val : Array of shape (N_val, M)
             Unchanged validation target values.
         """
-        X_mean = np.mean(X_train, axis=1, keepdims=True)
-        X_std = np.std(X_train, axis=1, ddof=1, mean=X_mean, keepdims=True)
-        X_std[X_std <= np.finfo(np.float64).eps] = 1
-        X_snv = (X_train - X_mean) / X_std
+        X_train_snv = TestClass._snv(X_train)
+        X_val_snv = TestClass._snv(X_val)
         return (
-            X_snv,
+            X_train_snv,
             Y_train,
-            X_val,
+            X_val_snv,
             Y_val,
         )
 
     @staticmethod
     def jax_snv(
-        X_train: npt.NDArray, Y_train, X_val, Y_val, *args, **kwargs
+        X_train: jnp.ndarray,
+        Y_train: jnp.ndarray,
+        X_val: jnp.ndarray,
+        Y_val: jnp.ndarray,
+        *args,
+        **kwargs,
     ) -> jnp.ndarray:
         """
         Description
@@ -701,23 +774,21 @@ class TestClass:
 
         Returns
         -------
-        X_snv : Array of shape (N_train, K)
+        X_train_snv : Array of shape (N_train, K)
             SNV-scaled training data.
 
         Y_train : Array of shape (N_train, M)
             Unchanged training target values.
 
-        X_val : Array of shape (N_val, K)
+        X_val_snv : Array of shape (N_val, K)
             SNV-scaled validation data.
 
         Y_val : Array of shape (N_val, M)
             Unchanged validation target values.
         """
-        X_mean = jnp.mean(X_train, axis=1, keepdims=True)
-        X_std = jnp.std(X_train, axis=1, ddof=1, keepdims=True)
-        X_std = jnp.where(X_std <= np.finfo(np.float64).eps, 1, X_std)
-        X_snv = (X_train - X_mean) / X_std
-        return X_snv, Y_train, X_val, Y_val
+        X_train_snv = TestClass._jax_snv(jnp.asarray(X_train))
+        X_val_snv = TestClass._jax_snv(jnp.asarray(X_val))
+        return X_train_snv, Y_train, X_val_snv, Y_val
 
     @staticmethod
     def pred_metric(Y_val, Y_pred, *args, **kwargs):
@@ -2360,7 +2431,7 @@ class TestClass:
         X: npt.NDArray,
         Y: npt.NDArray,
         n_components: int,
-        cv_splits: Optional[npt.NDArray] = None,
+        folds: Optional[npt.NDArray] = None,
     ) -> None:
         """
         Description
@@ -2402,7 +2473,7 @@ class TestClass:
                     X=X,
                     Y=Y,
                     A=n_components,
-                    cv_splits=cv_splits,
+                    folds=folds,
                     metric_function=lambda x, y: 0,
                     n_jobs=1,
                 )
@@ -2460,8 +2531,8 @@ class TestClass:
         jax_pls_alg_2 = JAX_Alg_2(differentiable=False, verbose=True)
         fast_cv_alg_1 = FastCVPLS(algorithm=1)
         fast_cv_alg_2 = FastCVPLS(algorithm=2)
-        cv_splits = np.zeros(shape=(X.shape[0],), dtype=int)
-        cv_splits[: X.shape[0] // 2] = 1
+        folds = np.zeros(shape=(X.shape[0],), dtype=int)
+        folds[: X.shape[0] // 2] = 1
 
         self._helper_check_pls_constant_y(
             pls_model=sk_pls, X=X, Y=Y, n_components=n_components
@@ -2483,20 +2554,20 @@ class TestClass:
             X=X,
             Y=Y,
             n_components=n_components,
-            cv_splits=cv_splits,
+            folds=folds,
         )
         self._helper_check_pls_constant_y(
             pls_model=fast_cv_alg_2,
             X=X,
             Y=Y,
             n_components=n_components,
-            cv_splits=cv_splits,
+            folds=folds,
         )
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
+    # @pytest.mark.skip(
+    #     reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
+    #     "Python3.13 machine."
+    # )
     def test_pls_1_constant_y(self):
         """
         Description
@@ -2518,10 +2589,10 @@ class TestClass:
         assert Y.shape[1] == 1
         self.check_pls_constant_y(X, Y)
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
+    # @pytest.mark.skip(
+    #     reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
+    #     "Python3.13 machine."
+    # )
     def test_pls_2_m_less_k_constant_y(self):
         """
         Description
@@ -2545,10 +2616,10 @@ class TestClass:
         assert Y.shape[1] < X.shape[1]
         self.check_pls_constant_y(X, Y)
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
+    # @pytest.mark.skip(
+    #     reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
+    #     "Python3.13 machine."
+    # )
     def test_pls_2_m_eq_k_constant_y(self):
         """
         Description
@@ -2572,10 +2643,10 @@ class TestClass:
         assert Y.shape[1] == X.shape[1]
         self.check_pls_constant_y(X, Y)
 
-    @pytest.mark.skip(
-        reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
-        "Python3.13 machine."
-    )
+    # @pytest.mark.skip(
+    #     reason="Issues with GitHub hosted runners. Tests pass on local Ubuntu 22.04 "
+    #     "Python3.13 machine."
+    # )
     def test_pls_2_m_greater_k_constant_y(self):
         """
         Description
@@ -3473,7 +3544,7 @@ class TestClass:
             X=X,
             Y=Y,
             A=n_components,
-            cv_splits=splits.flatten(),
+            folds=splits.flatten(),
             metric_function=self.rmse_per_component,
             n_jobs=-1,
             verbose=0,
@@ -3482,7 +3553,7 @@ class TestClass:
             X=X,
             Y=Y,
             A=n_components,
-            cv_splits=splits.flatten(),
+            folds=splits.flatten(),
             metric_function=self.rmse_per_component,
             n_jobs=-1,
             verbose=0,
@@ -3777,7 +3848,7 @@ class TestClass:
         " multithreaded, so this will likely lead to a"
         " deadlock.",
     )
-    def check_center_scale_combinations(self, X, Y, splits, atol, rtol):
+    def check_center_scale_combinations(self, X, Y, weights, splits, atol, rtol):
         """
         Description
         -----------
@@ -3818,8 +3889,12 @@ class TestClass:
         center_Ys = [False, True]
         scale_Xs = [False, True]
         scale_Ys = [False, True]
+        use_weights = [False, True]
+        ddofs = [0, 1]
 
-        center_scale_combinations = product(center_Xs, center_Ys, scale_Xs, scale_Ys)
+        center_scale_use_weights_ddofs_combinations = product(
+            center_Xs, center_Ys, scale_Xs, scale_Ys, use_weights, ddofs
+        )
 
         try:
             M = Y.shape[1]
@@ -3839,7 +3914,14 @@ class TestClass:
         )
         n_components = min(X.shape[1], largest_split)
 
-        for center_X, center_Y, scale_X, scale_Y in center_scale_combinations:
+        for (
+            center_X,
+            center_Y,
+            scale_X,
+            scale_Y,
+            use_w,
+            ddof,
+        ) in center_scale_use_weights_ddofs_combinations:
             (
                 np_pls_alg_1,
                 np_pls_alg_2,
@@ -3854,23 +3936,31 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
+                ddof=ddof,
                 fast_cv=True,
             )
 
-            np_pls_alg_1_rmses = np_pls_alg_1.cross_validate(
-                X,
-                Y,
-                n_components,
-                splits,
-                self.rmse_per_component,
+            if use_w:
+                cur_weights = weights
+            else:
+                cur_weights = None
+
+            np_pls_alg_1_results = np_pls_alg_1.cross_validate(
+                X=X,
+                Y=Y,
+                A=n_components,
+                folds=splits,
+                metric_function=self.rmse_per_component,
+                weights=cur_weights,
                 n_jobs=2,
             )
-            np_pls_alg_2_rmses = np_pls_alg_2.cross_validate(
-                X,
-                Y,
-                n_components,
-                splits,
-                self.rmse_per_component,
+            np_pls_alg_2_results = np_pls_alg_2.cross_validate(
+                X=X,
+                Y=Y,
+                A=n_components,
+                folds=splits,
+                metric_function=self.rmse_per_component,
+                weights=cur_weights,
                 n_jobs=2,
             )
 
@@ -3880,8 +3970,9 @@ class TestClass:
                 X=X,
                 Y=Y,
                 A=n_components,
-                cv_splits=splits,
+                folds=splits,
                 metric_function=self.rmse_per_component,
+                weights=cur_weights,
                 n_jobs=2,
                 verbose=0,
             )
@@ -3889,8 +3980,9 @@ class TestClass:
                 X=X,
                 Y=Y,
                 A=n_components,
-                cv_splits=splits,
+                folds=splits,
                 metric_function=self.rmse_per_component,
+                weights=cur_weights,
                 n_jobs=2,
                 verbose=0,
             )
@@ -3912,36 +4004,40 @@ class TestClass:
 
             # Calibrate JAX PLS
             jax_pls_alg_1_results = jax_pls_alg_1.cross_validate(
-                X,
-                Y,
-                n_components,
-                jnp_splits,
-                self.jax_rmse_per_component,
-                ["RMSE"],
+                X=X,
+                Y=Y,
+                A=n_components,
+                folds=jnp_splits,
+                metric_function=self.jax_rmse_per_component,
+                metric_names=["RMSE"],
+                weights=cur_weights,
             )
             diff_jax_pls_alg_1_results = diff_jax_pls_alg_1.cross_validate(
-                X,
-                Y,
-                n_components,
-                jnp_splits,
-                self.jax_rmse_per_component,
-                ["RMSE"],
+                X=X,
+                Y=Y,
+                A=n_components,
+                folds=jnp_splits,
+                metric_function=self.jax_rmse_per_component,
+                metric_names=["RMSE"],
+                weights=cur_weights,
             )
             jax_pls_alg_2_results = jax_pls_alg_2.cross_validate(
-                X,
-                Y,
-                n_components,
-                jnp_splits,
-                self.jax_rmse_per_component,
-                ["RMSE"],
+                X=X,
+                Y=Y,
+                A=n_components,
+                folds=jnp_splits,
+                metric_function=self.jax_rmse_per_component,
+                metric_names=["RMSE"],
+                weights=cur_weights,
             )
             diff_jax_pls_alg_2_results = diff_jax_pls_alg_2.cross_validate(
-                X,
-                Y,
-                n_components,
-                jnp_splits,
-                self.jax_rmse_per_component,
-                ["RMSE"],
+                X=X,
+                Y=Y,
+                A=n_components,
+                folds=jnp_splits,
+                metric_function=self.jax_rmse_per_component,
+                metric_names=["RMSE"],
+                weights=cur_weights,
             )
 
             # Get the best number of components in terms of minimizing validation RMSE
@@ -3949,14 +4045,14 @@ class TestClass:
             unique_splits = np.unique(splits).astype(int)
             np_pls_alg_1_best_num_components = [
                 [
-                    np.argmin(np_pls_alg_1_rmses[split][..., i])
+                    np.argmin(np_pls_alg_1_results[split][..., i])
                     for split in unique_splits
                 ]
                 for i in range(M)
             ]
             np_pls_alg_2_best_num_components = [
                 [
-                    np.argmin(np_pls_alg_2_rmses[split][..., i])
+                    np.argmin(np_pls_alg_2_results[split][..., i])
                     for split in unique_splits
                 ]
                 for i in range(M)
@@ -4005,7 +4101,7 @@ class TestClass:
             ]
             np_pls_alg_1_best_rmses = [
                 [
-                    np_pls_alg_1_rmses[split][
+                    np_pls_alg_1_results[split][
                         np_pls_alg_1_best_num_components[i][split], i
                     ]
                     for split in unique_splits
@@ -4014,7 +4110,7 @@ class TestClass:
             ]
             np_pls_alg_2_best_rmses = [
                 [
-                    np_pls_alg_2_rmses[split][
+                    np_pls_alg_2_results[split][
                         np_pls_alg_2_best_num_components[i][split], i
                     ]
                     for split in unique_splits
@@ -4076,7 +4172,7 @@ class TestClass:
                 for i in range(M)
             ]
 
-            err_msg = f"Center_X: {center_X}, Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+            err_msg = f"Use weights: {use_w}, Ddof: {ddof}, Center_X: {center_X}, Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
             assert_allclose(
                 np_pls_alg_2_best_rmses,
                 np_pls_alg_1_best_rmses,
@@ -4154,15 +4250,17 @@ class TestClass:
         X = self.load_X()
         X = X[..., :3]  # Decrease the amount of features in the interest of time.
         Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
+        weights = weights[::50]
         splits = splits[::50]
         assert Y.shape[1] == 1
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=1e-8)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-8)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4194,16 +4292,18 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         step_size_row = 1000
         X = X[::step_size_row]
         Y = Y[::step_size_row]
+        weights = weights[::step_size_row]
         splits = splits[::step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=0.15)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=0.15)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4235,6 +4335,7 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
@@ -4247,10 +4348,11 @@ class TestClass:
             : step_size_col * min_x_dim : step_size_col,
         ]
         Y = Y[: step_size_row * min_x_dim : step_size_row]
+        weights = weights[: step_size_row * min_x_dim : step_size_row]
         splits = splits[: step_size_row * min_x_dim : step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=0.2)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=0.2)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4284,16 +4386,18 @@ class TestClass:
                 "Protein",
             ]
         )
+        weights = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
+        weights = weights[::50]
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=1e-7)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-7)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4327,16 +4431,18 @@ class TestClass:
             ]
         )
         X = X[..., :2]
+        weights = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
+        weights = weights[::50]
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=3e-8)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=3e-8)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4372,16 +4478,18 @@ class TestClass:
             ]
         )
         X = X[..., :3]
+        weights = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
+        weights = weights[::50]
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
-        self.check_center_scale_combinations(X, Y, splits, atol=0, rtol=1e-8)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-8)
 
     def check_wpls_max_components_eq_to_wls(
         self,
@@ -4950,34 +5058,63 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                fast_cv=False,
+                fast_cv=True,
             )
 
+            nppls_alg_1_rmses_per_component = None
+            nppls_alg_2_rmses_per_component = None
+            fast_cv_nppls_alg_1_rmses_per_component = None
+            fast_cv_nppls_alg_2_rmses_per_component = None
+            nppls_alg_1_max_stable_components = []
+            nppls_alg_2_max_stable_components = []
             for model in models:
                 if isinstance(model, (JAX_Alg_1, JAX_Alg_2)):
                     results = model.cross_validate(
                         X=X,
                         Y=Y,
                         A=n_components,
-                        cv_splits=splits,
+                        folds=splits,
                         preprocessing_function=self.jax_snv,
-                        metric_function=self.pred_metric,
-                        metric_names=["Preds"],
+                        metric_function=self.jax_rmse_per_component,
+                        metric_names=["RMSE"],
                         weights=weights,
                     )
-                    cv_preds = [results["Preds"][split] for split in unique_splits]
+                    cv_rmses_per_component = [
+                        results["RMSE"][split] for split in unique_splits
+                    ]
                 elif isinstance(model, NpPLS):
                     results = model.cross_validate(
                         X=X,
                         Y=Y,
                         A=n_components,
-                        cv_splits=splits,
+                        folds=splits,
                         preprocessing_function=self.snv,
-                        metric_function=self.pred_metric,
+                        metric_function=self.rmse_per_component,
                         weights=weights,
                         n_jobs=2,
                     )
-                    cv_preds = [results[split] for split in unique_splits]
+                    cv_rmses_per_component = [results[split] for split in unique_splits]
+                    if model.algorithm == 1:
+                        nppls_alg_1_rmses_per_component = cv_rmses_per_component
+                    elif model.algorithm == 2:
+                        nppls_alg_2_rmses_per_component = cv_rmses_per_component
+                elif isinstance(model, FastCVPLS):
+                    snv_X = self._snv(X)
+                    results = model.cross_validate(
+                        X=snv_X,
+                        Y=Y,
+                        A=n_components,
+                        folds=splits,
+                        metric_function=self.rmse_per_component,
+                        weights=weights,
+                        n_jobs=-2,
+                    )
+                    cv_rmses_per_component = [results[split] for split in unique_splits]
+                    if model.algorithm == 1:
+                        fast_cv_nppls_alg_1_rmses_per_component = cv_rmses_per_component
+                    elif model.algorithm == 2:
+                        fast_cv_nppls_alg_2_rmses_per_component = cv_rmses_per_component
+                    continue
                 else:
                     raise ValueError(f"Model {model} not recognized.")
 
@@ -4990,8 +5127,17 @@ class TestClass:
                         X_train, Y_train, X_val, Y_val
                     )
                     weights_train = weights[splits != split]
+                    weights_val = weights[splits == split]
                     model.fit(X_train, Y_train, n_components, weights_train)
                     direct_preds = model.predict(X_val)
+                    if isinstance(model, (JAX_Alg_1, JAX_Alg_2)):
+                        direct_rmses_per_component = self.jax_rmse_per_component(
+                            Y_val, direct_preds, weights_val
+                        )
+                    else:
+                        direct_rmses_per_component = self.rmse_per_component(
+                            Y_val, direct_preds, weights_val
+                        )
                     max_stable_components = model.max_stable_components
                     # SNV removes the mean, so we are losing one component
                     if (
@@ -5000,18 +5146,67 @@ class TestClass:
                     ):
                         max_stable_components = model.A - 1
 
+                    if isinstance(model, NpPLS):
+                        if model.algorithm == 1:
+                            nppls_alg_1_max_stable_components.append(
+                                max_stable_components
+                            )
+                        elif model.algorithm == 2:
+                            nppls_alg_2_max_stable_components.append(
+                                max_stable_components
+                            )
+
                     err_msg = (
                         f"Model {model}, split_idx: {i}, Center_X: {center_X},"
                         f"Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
                     )
 
                     assert_allclose(
-                        cv_preds[i][:max_stable_components],
-                        direct_preds[:max_stable_components],
+                        cv_rmses_per_component[i][:max_stable_components],
+                        direct_rmses_per_component[:max_stable_components],
                         atol=atol,
                         rtol=rtol,
                         err_msg=err_msg,
                     )
+
+            nppls_alg_1_max_stable_components = np.array(
+                nppls_alg_1_max_stable_components
+            )
+            nppls_alg_2_max_stable_components = np.array(
+                nppls_alg_2_max_stable_components
+            )
+            fast_cv_nppls_alg_1_rmses_per_component = np.array(
+                fast_cv_nppls_alg_1_rmses_per_component
+            )
+            fast_cv_nppls_alg_2_rmses_per_component = np.array(
+                fast_cv_nppls_alg_2_rmses_per_component
+            )
+
+            for i in range(len(unique_splits)):
+                assert_allclose(
+                    nppls_alg_1_rmses_per_component[i][
+                        : nppls_alg_1_max_stable_components[i]
+                    ],
+                    fast_cv_nppls_alg_1_rmses_per_component[i][
+                        : nppls_alg_1_max_stable_components[i]
+                    ],
+                )
+                assert_allclose(
+                    nppls_alg_2_rmses_per_component[i][
+                        : nppls_alg_2_max_stable_components[i]
+                    ],
+                    fast_cv_nppls_alg_2_rmses_per_component[i][
+                        : nppls_alg_2_max_stable_components[i]
+                    ],
+                )
+                assert_allclose(
+                    nppls_alg_1_rmses_per_component[i][
+                        : nppls_alg_1_max_stable_components[i]
+                    ],
+                    fast_cv_nppls_alg_2_rmses_per_component[i][
+                        : nppls_alg_2_max_stable_components[i]
+                    ],
+                )
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
@@ -5180,3 +5375,84 @@ class TestClass:
         self.check_weighted_cross_val_with_preprocessing(
             X, Y, random_weights, splits, atol=1e-7, rtol=1e-7
         )
+
+    def check_nonnegative_weights(self, X, Y, weights, splits):
+        models = self.get_models(
+            center_X=True,
+            center_Y=True,
+            scale_X=True,
+            scale_Y=True,
+            fast_cv=True,
+        )
+
+        match_str = "Weights must be non-negative."
+
+        for model in models:
+            if isinstance(model, FastCVPLS):
+                # FastCVPLS has no fit method
+                continue
+            else:
+                # Assert that a ValueError is raised when weights are negative
+                with pytest.raises(ValueError, match=match_str):
+                    model.fit(
+                        X=X,
+                        Y=Y,
+                        A=min(X.shape[0], X.shape[1]),
+                        weights=weights,
+                    )
+
+        for model in models:
+            with pytest.raises(ValueError, match=match_str):
+                if isinstance(model, (JAX_Alg_1, JAX_Alg_2)):
+                    model.cross_validate(
+                        X=X,
+                        Y=Y,
+                        A=min(X.shape[0], X.shape[1]),
+                        folds=splits,
+                        metric_function=self.jax_rmse_per_component,
+                        metric_names=["RMSE"],
+                        weights=weights,
+                    )
+                else:
+                    model.cross_validate(
+                        X=X,
+                        Y=Y,
+                        A=min(X.shape[0], X.shape[1]),
+                        folds=splits,
+                        metric_function=self.rmse_per_component,
+                        weights=weights,
+                    )
+
+    def test_nonnegative_weights(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables, a single target variable, weights,
+        and split indices for cross-validation. It then calls the `check_nonnegative_weights`
+        method to validate that the PLS algorithms raise a ValueError when negative weights
+        are provided.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        # Check that split contains integers from 0 to n_splits - 1. This is not
+        # necessary for the cross validation methods but it is necessary for the check
+        # we are performing.
+        assert np.all(np.unique(splits) == np.arange(splits.max() + 1))
+        random_weights = self.load_weights(None)
+
+        # Set the last weight to a negative value and see if it raises an error.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        splits = splits[::step]
+        random_weights = random_weights[::step]
+        random_weights[-1] = -1
+        assert Y.shape[1] == 1
+
+        self.check_nonnegative_weights(X, Y, random_weights, splits)

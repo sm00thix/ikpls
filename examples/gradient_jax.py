@@ -12,7 +12,7 @@ The code includes the following functions:
     to the weights of the convolution filter.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 from typing import Callable, Union
@@ -38,12 +38,15 @@ def apply_1d_convolution(X: jnp.ndarray, conv_filter: jnp.ndarray) -> jnp.ndarra
 
 
 @jax.jit
-def mean_squared_error(Y_true: jnp.ndarray, Y_pred: jnp.ndarray) -> float:
+def weighted_mean_squared_error(
+    Y_true: jnp.ndarray, Y_pred: jnp.ndarray, weights: jnp.ndarray
+) -> float:
     """
-    Compute the mean squared error between the true and predicted values.
+    Compute the weighted mean squared error between the true and predicted values.
     """
     # Y_true is a matrix of shape (N, M) = (100, 10)
     # Y_pred is a matrix of shape (N, M) = (100, 10) or (A, N, M) = (20, 100, 10)
+    # Y_pred is a
     e = Y_true - Y_pred  # Shape (N, M) or (A, N, M)
     se = e**2  # Shape (N, M) or (A, N, M)
     mse = jnp.mean(se, axis=(-2, -1))  # Shape () or (A,)
@@ -54,6 +57,7 @@ def mean_squared_error(Y_true: jnp.ndarray, Y_pred: jnp.ndarray) -> float:
 def convolve_fit_mse(
     X: jnp.ndarray,
     Y: jnp.ndarray,
+    weights: jnp.ndarray,
     pls_alg,
     A: int,
     n_components: Union[int, None] = None,
@@ -73,12 +77,12 @@ def convolve_fit_mse(
         filtered_X = apply_1d_convolution(X, conv_filter)
 
         # We must use stateless_fit() because we are using JAX's autodiff.
-        matrices = pls_alg.stateless_fit(filtered_X, Y, A)
+        matrices = pls_alg.stateless_fit(filtered_X, Y, A, weights)
         B = matrices[0]  # Extract the regression matrix
 
         # Predict the values.
         Y_pred = pls_alg.stateless_predict(filtered_X, B, n_components)
-        mse_loss = mean_squared_error(Y, Y_pred)
+        mse_loss = weighted_mean_squared_error(Y, Y_pred, weights)
         return mse_loss
 
     return helper

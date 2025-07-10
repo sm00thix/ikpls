@@ -8,7 +8,7 @@ The implementation is written using NumPy and allows for parallelization of the
 cross-validation process using joblib.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import warnings
@@ -19,6 +19,8 @@ import joblib
 import numpy as np
 import numpy.linalg as la
 import numpy.typing as npt
+from cvmatrix.cvmatrix import CVMatrix
+from cvmatrix.partitioner import Partitioner
 from joblib import Parallel, delayed
 
 
@@ -32,7 +34,9 @@ class PLS:
     Parameters
     ----------
     algorithm : int, default=1
-        Whether to use Improved Kernel PLS Algorithm #1 or #2.
+        Whether to use Improved Kernel PLS Algorithm #1 or #2. Generally, Algorithm #1
+        is faster if `X` has less rows than columns, while Algorithm #2 is faster if
+        `X` has more rows than columns.
 
     center_X : bool, optional default=True
         Whether to center `X` before fitting by subtracting its row of
@@ -46,20 +50,30 @@ class PLS:
 
     scale_X : bool, optional default=True
         Whether to scale `X` before fitting by dividing each row with the row of `X`'s
-        column-wise standard deviations. Bessel's correction for the unbiased estimate
-        of the sample standard deviation is used. The row of column-wise standard
-        deviations is computed on the training set for each fold to avoid data leakage.
+        column-wise standard deviations. The row of column-wise standard deviations is
+        computed on the training set for each fold to avoid data leakage.
 
     scale_Y : bool, optional default=True
         Whether to scale `Y` before fitting by dividing each row with the row of `X`'s
-        column-wise standard deviations. Bessel's correction for the unbiased estimate
-        of the sample standard deviation is used. The row of column-wise standard
-        deviations is computed on the training set for each fold to avoid data leakage.
+        column-wise standard deviations. The row of column-wise standard deviations is
+        computed on the training set for each fold to avoid data leakage.
+
+    ddof : int, default=1
+        The delta degrees of freedom to use when computing the sample standard
+        deviation. A value of 0 corresponds to the biased estimate of the sample
+        standard deviation, while a value of 1 corresponds to Bessel's correction for
+        the sample standard deviation.
 
     dtype : numpy.float, default=numpy.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
+
+    copy : bool, default=True
+        Whether to copy `X`, `Y`, and `weights` when cross-validating. If True or the
+        data is not already arrays of the specified `dtype`, then the data is copied.
+        Otherwise, the data is not copied and changes to `X`, `Y`, and `weights`
+        outside may affect the results of the cross-validation.
 
     Raises
     ------
@@ -80,39 +94,34 @@ class PLS:
 
     def __init__(
         self,
+        algorithm: int = 1,
         center_X: bool = True,
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
-        algorithm: int = 1,
+        ddof: int = 1,
         dtype: np.floating = np.float64,
+        copy: bool = True,
     ) -> None:
         self.center_X = center_X
         self.center_Y = center_Y
         self.scale_X = scale_X
         self.scale_Y = scale_Y
         self.algorithm = algorithm
+        self.ddof = ddof
         self.dtype = dtype
+        self.copy = copy
         self.eps = np.finfo(dtype).eps
         self.name = f"Improved Kernel PLS Algorithm #{algorithm}"
         if self.algorithm not in [1, 2]:
             raise ValueError(
                 f"Invalid algorithm: {self.algorithm}. Algorithm must be 1 or 2."
             )
-        self.X = None
-        self.Y = None
+        self.sqrt_weights = None  # Used for algorithm 1
         self.A = None
         self.N = None
         self.K = None
         self.M = None
-        self.X_mean = None
-        self.Y_mean = None
-        self.sum_X = None
-        self.sum_Y = None
-        self.sum_sq_X = None
-        self.sum_sq_Y = None
-        self.XTX = None
-        self.XTY = None
         if self.algorithm == 1:
             self.all_indices = None
 
@@ -137,30 +146,17 @@ class PLS:
     def _stateless_fit(
         self,
         validation_indices: npt.NDArray[np.int_],
-    ) -> Union[
-        tuple[
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-        ],
-        tuple[
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-            npt.NDArray[np.floating],
-        ],
+    ) -> tuple[
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+        Union[None, npt.NDArray[np.floating]],
+        Union[None, npt.NDArray[np.floating]],
+        Union[None, npt.NDArray[np.floating]],
+        Union[None, npt.NDArray[np.floating]],
+        Union[None, npt.NDArray[np.floating]],
     ]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -188,8 +184,9 @@ class PLS:
         R : Array of shape (A, K)
             PLS weights matrix to compute scores T directly from original X.
 
-        T : Array of shape (A, N_train)
+        T : None or Array of shape (A, N_train)
             PLS scores matrix of X. Only Returned for Improved Kernel PLS Algorithm #1.
+            If `self.algorithm` is 2, then this will be None.
 
         training_X_mean : Array of shape (1, K)
             Mean row of training X. Will be an array of zeros if `self.center` is
@@ -226,116 +223,38 @@ class PLS:
         Q = QT.T
         R = RT.T
 
-        validation_size = validation_indices.size
         if self.algorithm == 1:
+            validation_size = validation_indices.size
             TT = np.zeros(shape=(self.A, self.N - validation_size), dtype=self.dtype)
             T = TT.T
-
-        # Extract training X and Y
-        validation_X = self.X[validation_indices]
-        validation_Y = self.Y[validation_indices]
-
-        if self.center_X or self.center_Y or self.scale_X or self.scale_Y:
-            training_size = self.N - validation_size
-            N_total_over_N_train = self.N / training_size
-            N_val_over_N_train = validation_size / training_size
-
-        # Compute the training set means
-        if self.center_X or self.center_Y or self.scale_X:
-            training_X_mean = (
-                N_total_over_N_train * self.X_mean
-                - N_val_over_N_train * np.mean(validation_X, axis=0, keepdims=True)
-            )
-        if self.center_X or self.center_Y or self.scale_Y:
-            training_Y_mean = (
-                N_total_over_N_train * self.Y_mean
-                - N_val_over_N_train * np.mean(validation_Y, axis=0, keepdims=True)
-            )
-
-        # Compute the training set standard deviations for X
-        if self.scale_X:
-            train_sum_X = self.sum_X - np.expand_dims(
-                np.einsum("ij -> j", validation_X), axis=0
-            )
-            train_sum_sq_X = self.sum_sq_X - np.expand_dims(
-                np.einsum("ij,ij -> j", validation_X, validation_X), axis=0
-            )
-            training_X_std = np.sqrt(
-                1
-                / (training_size - 1)
-                * (
-                    -2 * training_X_mean * train_sum_X
-                    + training_size
-                    * np.einsum("ij,ij -> ij", training_X_mean, training_X_mean)
-                    + train_sum_sq_X
-                )
-            )
-            training_X_std[np.abs(training_X_std) <= self.eps] = 1
-
-        # Compute the training set standard deviations for Y
-        if self.scale_Y:
-            train_sum_Y = self.sum_Y - np.expand_dims(
-                np.einsum("ij -> j", validation_Y), axis=0
-            )
-            train_sum_sq_Y = self.sum_sq_Y - np.expand_dims(
-                np.einsum("ij,ij -> j", validation_Y, validation_Y), axis=0
-            )
-            training_Y_std = np.sqrt(
-                1
-                / (training_size - 1)
-                * (
-                    -2 * training_Y_mean * train_sum_Y
-                    + training_size
-                    * np.einsum("ij,ij -> ij", training_Y_mean, training_Y_mean)
-                    + train_sum_sq_Y
-                )
-            )
-            training_Y_std[np.abs(training_Y_std) <= self.eps] = 1
-
-        # Subtract the validation set's contribution from the total XTY
-        training_XTY = self.XTY - validation_X.T @ validation_Y
-
-        # Apply the training set centering
-        if self.center_X or self.center_Y:
-            # Apply the training set centering
-            training_XTY = training_XTY - training_size * (
-                training_X_mean.T @ training_Y_mean
-            )
-
-        # Apply the training set scaling
-        if self.scale_X and self.scale_Y:
-            divisor = training_X_std.T @ training_Y_std
-        elif self.scale_X:
-            divisor = training_X_std.T
-        elif self.scale_Y:
-            divisor = training_Y_std
-        if self.scale_X or self.scale_Y:
-            training_XTY = training_XTY / divisor
+        else:
+            T = None
 
         # If algorithm is 1, extract training set X
         if self.algorithm == 1:
             training_indices = np.setdiff1d(
                 self.all_indices, validation_indices, assume_unique=True
             )
-            training_X = self.X[training_indices]
+            training_X = self.cvm.X[training_indices]
+            training_sqrt_w = (
+                self.sqrt_weights[training_indices]
+                if self.sqrt_weights is not None
+                else None
+            )
+            result = self.cvm.training_XTY(validation_indices)
+            training_XTY = result[0]
+            training_X_mean, training_X_std, training_Y_mean, training_Y_std = result[1]
             if self.center_X:
-                # Apply the training set centering
                 training_X = training_X - training_X_mean
             if self.scale_X:
-                # Apply the training set scaling
                 training_X = training_X / training_X_std
+            if training_sqrt_w is not None:
+                training_X = training_X * training_sqrt_w
 
-        # If algorithm is 2, derive training set XTX from total XTX and validation XTX
         else:
-            training_XTX = self.XTX - validation_X.T @ validation_X
-            if self.center_X:
-                # Apply the training set centering
-                training_XTX = training_XTX - training_size * (
-                    training_X_mean.T @ training_X_mean
-                )
-            if self.scale_X:
-                # Apply the training set scaling
-                training_XTX = training_XTX / (training_X_std.T @ training_X_std)
+            result = self.cvm.training_XTX_XTY(validation_indices)
+            training_XTX, training_XTY = result[0]
+            training_X_mean, training_X_std, training_Y_mean, training_Y_std = result[1]
 
         # Execute Improved Kernel PLS steps 2-5
         for i in range(self.A):
@@ -393,37 +312,14 @@ class PLS:
             # Compute regression coefficients
             B[i] = B[i - 1] + r @ q.T
 
-        # Use additive and multiplicative identities for means and standard deviations
-        # for centering and scaling if they are not used
-        if not self.center_X:
-            training_X_mean = np.zeros((1, self.K))
-        if not self.center_Y:
-            training_Y_mean = np.zeros((1, self.M))
-        if not self.scale_X:
-            training_X_std = np.ones((1, self.K))
-        if not self.scale_Y:
-            training_Y_std = np.ones((1, self.M))
-
         # Return PLS matrices and training set statistics
-        if self.algorithm == 1:
-            return (
-                B,
-                W,
-                P,
-                Q,
-                R,
-                T,
-                training_X_mean,
-                training_Y_mean,
-                training_X_std,
-                training_Y_std,
-            )
         return (
             B,
             W,
             P,
             Q,
             R,
+            T,
             training_X_mean,
             training_Y_mean,
             training_X_std,
@@ -434,10 +330,10 @@ class PLS:
         self,
         indices: npt.NDArray[np.int_],
         B: npt.NDArray[np.floating],
-        training_X_mean: npt.NDArray[np.floating],
-        training_Y_mean: npt.NDArray[np.floating],
-        training_X_std: npt.NDArray[np.floating],
-        training_Y_std: npt.NDArray[np.floating],
+        training_X_mean: Union[None, npt.NDArray[np.floating]],
+        training_Y_mean: Union[None, npt.NDArray[np.floating]],
+        training_X_std: Union[None, npt.NDArray[np.floating]],
+        training_Y_std: Union[None, npt.NDArray[np.floating]],
         n_components: Union[None, int] = None,
     ) -> npt.NDArray[np.floating]:
         """
@@ -454,23 +350,21 @@ class PLS:
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
 
-        training_X_mean : Array of shape (1, K)
-            Mean row of training X. If self.center_X is False, then this should be an
-            array of zeros.
+        training_X_mean : None or Array of shape (1, K)
+            Mean row of training X. If None, then no centering is applied to the
+            predictor variables.
 
-        training_Y_mean : Array of shape (1, M)
-            Mean row of training Y. If self.center_Y is False, then this should be an
-            array of zeros.
+        training_Y_mean : None or Array of shape (1, M)
+            Mean row of training Y. If None, then no centering is applied to the
+            target variables.
 
-        training_X_std : Array of shape (1, K)
-            Sample standard deviation row of training X. If self.scale_X is False, then
-            this should be an array of ones. Any zero standard deviations should be
-            replaced with ones.
+        training_X_std : None or Array of shape (1, K)
+            Sample standard deviation row of training X. If None, then no scaling is
+            applied to the predictor variables.
 
-        training_Y_std : Array of shape (1, M)
-            Sample standard deviation row of training Y. If self.scale_Y is False, then
-            this should be an array of ones. Any zero standard deviations should be
-            replaced with ones.
+        training_Y_std : None or Array of shape (1, M)
+            Sample standard deviation row of training Y. If None, then no scaling is
+            applied to the target variables.
 
         n_components : int or None, optional
             Number of components in the PLS model. If None, then all number of
@@ -488,22 +382,34 @@ class PLS:
         -----
         """
 
-        predictor_variables = self.X[indices]
+        predictor_variables = self.cvm.X[indices]
         # Apply the potential training set centering and scaling
-        predictor_variables = (predictor_variables - training_X_mean) / training_X_std
+        if self.center_X:
+            predictor_variables = predictor_variables - training_X_mean
+        if self.scale_X:
+            predictor_variables = predictor_variables / training_X_std
         if n_components is None:
             Y_pred = predictor_variables @ B
         else:
             Y_pred = predictor_variables @ B[n_components - 1]
         # Multiply by the potential training set scale and add the potential training
         # set bias
-        return Y_pred * training_Y_std + training_Y_mean
+        if self.scale_Y:
+            Y_pred = Y_pred * training_Y_std
+        if self.center_Y:
+            Y_pred = Y_pred + training_Y_mean
+        return Y_pred
 
     def _stateless_fit_predict_eval(
         self,
         validation_indices: npt.NDArray[np.int_],
         metric_function: Callable[
-            [npt.NDArray[np.floating], npt.NDArray[np.floating]], Any
+            [
+                npt.NDArray[np.floating],
+                npt.NDArray[np.floating],
+                Union[None, npt.NDArray[np.floating]],
+            ],
+            Any,
         ],
     ) -> Any:
         """
@@ -519,8 +425,8 @@ class PLS:
             Integer array defining indices into X and Y corresponding to validation
             samples.
 
-        metric_function : Callable receiving arrays `Y_true` and `Y_pred` and returning
-        Any
+        metric_function : Callable receiving arrays `Y_true` and `Y_pred`, and, if
+        `self.weights` is not None, also `weights`, and returning Any.
 
         Returns
         -------
@@ -541,48 +447,25 @@ class PLS:
             training_X_std,
             training_Y_std,
         )
-        return metric_function(self.Y[validation_indices], Y_pred)
-
-    def _init_folds_dict(
-        self, cv_splits: Iterable[Hashable]
-    ) -> dict[Hashable, npt.NDArray[np.int_]]:
-        """
-        Generates a list of validation indices for each fold in `cv_splits`.
-
-        Parameters
-        ----------
-        cv_splits : Iterable of Hashable with N elements
-            An iterable defining cross-validation splits. Each unique value in
-            `cv_splits` corresponds to a different fold.
-
-        Returns
-        -------
-        index_dict : dict of Hashable to Array
-            A dictionary mapping each unique value in `cv_splits` to an array of
-            validation indices.
-        """
-        index_dict = {}
-        for i, num in enumerate(cv_splits):
-            try:
-                index_dict[num].append(i)
-            except KeyError:
-                index_dict[num] = [i]
-        for key in index_dict:
-            index_dict[key] = np.asarray(index_dict[key], dtype=int)
-        return index_dict
+        Y_true = self.cvm.Y[validation_indices]
+        if self.cvm.weights is None:
+            return metric_function(Y_true, Y_pred)
+        weights = self.cvm.weights[validation_indices].flatten()
+        return metric_function(Y_true, Y_pred, weights)
 
     def cross_validate(
         self,
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
-        cv_splits: Iterable[Hashable],
+        folds: Iterable[Hashable],
         metric_function: Callable[[npt.ArrayLike, npt.ArrayLike], Any],
+        weights: Union[None, npt.ArrayLike] = None,
         n_jobs=-1,
         verbose=10,
     ) -> dict[Hashable, Any]:
         """
-        Cross-validates the PLS model using `cv_splits` splits on `X` and `Y` with
+        Cross-validates the PLS model using `folds` splits on `X` and `Y` with
         `n_components` components evaluating results with `metric_function`.
 
         Parameters
@@ -596,19 +479,22 @@ class PLS:
         A : int
             Number of components in the PLS model.
 
-        cv_splits : Iterable of Hashable with N elements
+        folds : Iterable of Hashable with N elements
             An iterable defining cross-validation splits. Each unique value in
-            `cv_splits` corresponds to a different fold.
+            `folds` corresponds to a different fold.
 
-        metric_function : callable
-            A callable receiving arrays `Y_true` of shape (N_val, M) and `Y_pred` of
-            shape (A, N_val, M) and returning Any. Computes a metric based on true
-            values `Y_true` and predicted values `Y_pred`. `Y_pred` contains a
-            prediction for all `A` components.
+        metric_function : Callable receiving arrays `Y_val`, `Y_pred`, and, if
+        `weights` is not None, also, `weights_val`, and returning Any.
+            Computes a metric based on true values `Y_val` and predicted values
+            `Y_pred`. `Y_pred` contains a prediction for all `A` components.
+
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
 
         n_jobs : int, optional default=-1
             Number of parallel jobs to use. A value of -1 will use the minimum of all
-            available cores and the number of unique values in `cv_splits`.
+            available cores and the number of unique values in `folds`.
 
         verbose : int, optional default=10
             Controls verbosity of parallel jobs.
@@ -616,29 +502,45 @@ class PLS:
         Returns
         -------
         metrics : dict of Hashable to Any
-            A dictionary mapping each unique value in `cv_splits` to the result of
+            A dictionary mapping each unique value in `folds` to the result of
             evaluating `metric_function` on the validation set corresponding to that
             value.
 
         Notes
         -----
         The order of cross-validation folds is determined by the order of the unique
-        values in `cv_splits`. The keys and values of `metrics` will be sorted in the
+        values in `folds`. The keys and values of `metrics` will be sorted in the
         same order.
         """
 
-        self.X = np.asarray(X, dtype=self.dtype)
-        self.Y = np.asarray(Y, dtype=self.dtype)
-        if self.Y.ndim == 1:
-            self.Y = self.Y.reshape(-1, 1)
-        self.A = A
-        self.N, self.K = X.shape
-        self.M = self.Y.shape[1]
-        folds_dict = self._init_folds_dict(cv_splits)
-        num_splits = len(folds_dict)
+        X = np.asarray(X, dtype=self.dtype)
+        Y = np.asarray(Y, dtype=self.dtype)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+        if weights is not None:
+            weights = np.asarray(weights, dtype=self.dtype)
+            if weights.ndim == 1:
+                weights = weights.reshape(-1, 1)
+            if self.algorithm == 1:
+                self.sqrt_weights = np.sqrt(weights)
+        else:
+            self.sqrt_weights = None
 
-        if self.algorithm == 1:
-            self.all_indices = np.arange(self.N, dtype=int)
+        self.cvm = CVMatrix(
+            center_X=self.center_X,
+            center_Y=self.center_Y,
+            scale_X=self.scale_X,
+            scale_Y=self.scale_Y,
+            ddof=self.ddof,
+            dtype=self.dtype,
+            copy=False,
+        )
+
+        # It is important that Partitioner is not made an attribute of this
+        # class, as it will then be pickled and sent to each worker in parallel jobs
+        # which will cause immense performance degradation.
+        p = Partitioner(folds)
+        num_splits = len(p.folds_dict)
 
         if n_jobs == -1:
             n_jobs = min(joblib.cpu_count(), num_splits)
@@ -649,34 +551,15 @@ class PLS:
             f"parallel processes."
         )
 
-        # We can compute these once for the entire dataset and subtract the
-        # validation parts during cross-validation.
-        if self.center_X or self.center_Y or self.scale_X:
-            self.X_mean = np.mean(self.X, axis=0, keepdims=True)
-        if self.center_X or self.center_Y or self.scale_Y:
-            self.Y_mean = np.mean(self.Y, axis=0, keepdims=True)
-        if self.scale_X:
-            self.sum_X = np.expand_dims(np.einsum("ij->j", self.X), axis=0)
-            self.sum_sq_X = np.expand_dims(
-                np.einsum("ij,ij->j", self.X, self.X), axis=0
-            )
-        if self.scale_Y:
-            self.sum_Y = np.expand_dims(np.einsum("ij->j", self.Y), axis=0)
-            self.sum_sq_Y = np.expand_dims(
-                np.einsum("ij,ij->j", self.Y, self.Y), axis=0
-            )
+        self.cvm.fit(X, Y, weights)
+        self.A = A
+        self.N, self.K = self.cvm.X.shape
+        self.M = self.cvm.Y.shape[1]
 
-        if verbose > 0:
-            print("Computing total XTY...")
-        self.XTY = self.X.T @ self.Y
-        if verbose > 0:
-            print("Done!")
-        if self.algorithm == 2:
-            if verbose > 0:
-                print("Computing total XTX...")
-            self.XTX = self.X.T @ self.X
-            if verbose > 0:
-                print("Done!")
+        if self.algorithm == 1:
+            self.all_indices = np.arange(self.cvm.N, dtype=int)
+            if weights is not None:
+                self.sqrt_weights = np.sqrt(self.cvm.weights)
 
         def worker(
             validation_indices: npt.NDArray[np.int_],
@@ -685,8 +568,8 @@ class PLS:
             return self._stateless_fit_predict_eval(validation_indices, metric_function)
 
         metrics_list = Parallel(n_jobs=n_jobs, verbose=verbose)(
-            delayed(worker)(validation_indices, metric_function)
-            for validation_indices in folds_dict.values()
+            delayed(worker)(p.get_validation_indices(fold), metric_function)
+            for fold in p.folds_dict
         )
-        metrics_dict = dict(zip(folds_dict.keys(), metrics_list))
+        metrics_dict = dict(zip(p.folds_dict, metrics_list))
         return metrics_dict

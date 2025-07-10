@@ -344,18 +344,18 @@ def fast_cross_val_cpu_pls(pls, X, Y, A, n_splits, n_jobs, verbose):
     time : float
         Execution time for cross-validation.
     """
-    cv_splits = np.zeros(X.shape[0])
+    folds = np.zeros(X.shape[0])
     for i in range(X.shape[0] % n_splits):
         split_size = X.shape[0] // n_splits + 1
-        cv_splits[i * split_size : (i + 1) * split_size] = i
+        folds[i * split_size : (i + 1) * split_size] = i
     prev_max_idx = (X.shape[0] % n_splits) * (X.shape[0] // n_splits + 1)
     for i in range(n_splits - X.shape[0] % n_splits):
         split_size = X.shape[0] // n_splits
-        cv_splits[
-            prev_max_idx + i * split_size : prev_max_idx + (i + 1) * split_size
-        ] = (i + X.shape[0] % n_splits)
+        folds[prev_max_idx + i * split_size : prev_max_idx + (i + 1) * split_size] = (
+            i + X.shape[0] % n_splits
+        )
     t = Timer(
-        stmt="scores = pls.cross_validate(X=X, Y=Y, A=A, cv_splits=cv_splits, metric_function=mse_for_each_target_fast_cv, n_jobs=n_jobs, verbose=verbose, )",
+        stmt="scores = pls.cross_validate(X=X, Y=Y, A=A, folds=folds, metric_function=mse_for_each_target_fast_cv, n_jobs=n_jobs, verbose=verbose, )",
         timer=default_timer,
         globals=locals() | globals(),
     )
@@ -449,18 +449,18 @@ def cross_val_gpu_pls(pls, X, Y, n_components, n_splits, show_progress):
     time : float
         Execution time for cross-validation.
     """
-    cv_splits = np.zeros(X.shape[0])
+    folds = np.zeros(X.shape[0])
     for i in range(X.shape[0] % n_splits):
         split_size = X.shape[0] // n_splits + 1
-        cv_splits[i * split_size : (i + 1) * split_size] = i
+        folds[i * split_size : (i + 1) * split_size] = i
     prev_max_idx = (X.shape[0] % n_splits) * (X.shape[0] // n_splits + 1)
     for i in range(n_splits - X.shape[0] % n_splits):
         split_size = X.shape[0] // n_splits
-        cv_splits[
-            prev_max_idx + i * split_size : prev_max_idx + (i + 1) * split_size
-        ] = (i + X.shape[0] % n_splits)
+        folds[prev_max_idx + i * split_size : prev_max_idx + (i + 1) * split_size] = (
+            i + X.shape[0] % n_splits
+        )
     t = Timer(
-        stmt="pls.cross_validate(X=X, Y=Y, A=n_components, cv_splits=cv_splits, preprocessing_function=jax_preprocessing_function, metric_function=jax_mse_for_each_target, metric_names=jax_metric_names(Y.shape[1]), show_progress=show_progress)",
+        stmt="pls.cross_validate(X=X, Y=Y, A=n_components, folds=folds, preprocessing_function=jax_preprocessing_function, metric_function=jax_mse_for_each_target, metric_names=jax_metric_names(Y.shape[1]), show_progress=show_progress)",
         timer=default_timer,
         globals=locals() | globals(),
     )

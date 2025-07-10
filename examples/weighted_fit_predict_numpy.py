@@ -7,7 +7,7 @@ internal model parameters can also be accessed for further analysis.
 Note: The script assumes that the 'ikpls' package is installed and accessible.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import numpy as np
@@ -21,9 +21,9 @@ if __name__ == "__main__":
     A = 20  # Number of latent variables (PLS components).
 
     # Using float64 is important for numerical stability.
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
-    weights = np.random.uniform(low=0, high=2, size=(N,)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
+    weights = np.random.uniform(low=0, high=2, size=(N,))
 
     # The other PLS algorithms and implementations have the same interface for fit()
     # and predict(). The fast cross-validation implementation with IKPLS has a

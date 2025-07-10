@@ -14,7 +14,7 @@ To run the cross-validation, execute the file.
 Note: The code assumes the availability of the `ikpls` package and its dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 from typing import Tuple
@@ -76,9 +76,11 @@ if __name__ == "__main__":
     A = 20  # Number of latent variables (PLS components).
     splits = np.arange(100) % 5  # Randomly assign each sample to one of 5 splits.
 
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
-    weights = np.random.uniform(low=0, high=2, size=(N,)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
+
+    # weights can be None for no weighting or an array of shape (N,) for weighting.
+    weights = np.random.uniform(low=0, high=2, size=(N,))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -128,7 +130,7 @@ if __name__ == "__main__":
     best_wmse_for_each_split = np.amin(wmse_for_each_split, axis=-2)
 
     # shape (n_splits, M) = (5, 10)
-    equivalent_best_mse_for_each_split = np.array(
+    equivalent_best_wmse_for_each_split = np.array(
         [
             wmse_for_each_split[
                 i, best_num_components_for_each_split[i] - 1, np.arange(M)
@@ -136,4 +138,4 @@ if __name__ == "__main__":
             for i in range(len(best_num_components_for_each_split))
         ]
     )
-    (best_wmse_for_each_split == equivalent_best_mse_for_each_split).all()  # True
+    (best_wmse_for_each_split == equivalent_best_wmse_for_each_split).all()  # True

@@ -12,7 +12,7 @@ To run the cross-validation, execute the file.
 Note: The code assumes the availability of the `ikpls` package and its dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import numpy as np
@@ -83,9 +83,9 @@ if __name__ == "__main__":
     )  # Randomly assign each sample to one of 5 splits.
     number_of_splits = np.unique(splits).shape[0]
 
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
-    weights = np.random.uniform(low=0, high=2, size=(N,)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
+    weights = np.random.uniform(low=0, high=2, size=(N,))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.

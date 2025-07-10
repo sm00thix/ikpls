@@ -18,12 +18,15 @@
 
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
 
+## NEW IN 2.0.1: Fast cross-validation for weighted IKPLS.
+The `ikpls` software package now directly depends on the `cvmatrix` software package to implement the fast cross-validation by Engstrøm and Jensen [[7]]. `cvmatrix` extends the fast cross-validation algorithms to correctly handle the weighted cases. The extension includes support for all 16 (12 unique) combinations of weighted centering and weighted scaling for X and Y, increasing neither time nor space complexity.
+
 ## NEW IN 2.0.0: Weighted IKPLS
-The `ikpls` software package now also features sample-weighted PLS as described by [Becker and Ismail](https://doi.org/10.1016/j.emj.2016.06.009). Becker and Ismail use an erroneous computation of the weighted variance. `ikpls` corrects this.
+The `ikpls` software package now also features sample-weighted PLS [[8]](#references). For this, `ikpls` uses the weighted mean [[9]](#references) and standard deviation [[10]](#references) as formulated by National Institute of Science and Technology (NIST).
 Both NumPy and JAX implementations allow for weighted cross-validation with their respective `cross_validate` methods.
 
 ## Citation
-If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533). If you use the fast cross-validation algorithm implemented in `ikpls.fast_cross_validation.numpy_ikpls`, please also cite [this arXiv preprint](https://arxiv.org/abs/2401.13185).
+If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533). If you use the fast cross-validation algorithm implemented in `ikpls.fast_cross_validation.numpy_ikpls`, please also cite [this Journal of Chemometrics article](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008).
 
 ## Unlock the Power of Fast and Stable Partial Least Squares Modeling with IKPLS
 
@@ -45,8 +48,8 @@ The documentation is available at
 
 In addition to the standalone IKPLS implementations, this package
 contains an implementation of IKPLS combined with the novel, fast cross-validation
- by Engstrøm [[7]](#references). The fast cross-validation algorithm
-benefit both IKPLS Algorithms and especially Algorithm #2. The fast
+algorithm by Engstrøm and Jensen [[7]](#references). The fast cross-validation
+algorithm benefit both IKPLS Algorithms and especially Algorithm #2. The fast
 cross-validation algorithm is mathematically equivalent to the
 classical cross-validation algorithm. Still, it is much quicker.
 The fast cross-validation algorithm **correctly handles (column-wise)
@@ -113,9 +116,8 @@ Gotchas](https://github.com/google/jax#current-gotchas).
 >  M = 10  # Number of targets.
 >  A = 20  # Number of latent variables (PLS components).
 >
->  # Using float64 is important for numerical stability.
->  X = np.random.uniform(size=(N, K)).astype(np.float64)
->  Y = np.random.uniform(size=(N, M)).astype(np.float64)
+>  X = np.random.uniform(size=(N, K))
+>  Y = np.random.uniform(size=(N, M))
 >
 >  # The other PLS algorithms and implementations have the same interface for fit()
 >  # and predict(). The fast cross-validation implementation with IKPLS has a
@@ -184,18 +186,18 @@ Guidelines](https://github.com/Sm00thix/IKPLS/blob/main/CONTRIBUTING.md).
 
 ## References
 
-1. [Dayal, B. S., & MacGregor, J. F. (1997). Improved PLS algorithms. *Journal of Chemometrics*, 11(1), 73-85.](https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23?)
+1. [Dayal, B. S. and MacGregor, J. F. (1997). Improved PLS algorithms. *Journal of Chemometrics*, 11(1), 73-85.](https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23?)
 2. [Alin, A. (2009). Comparison of PLS algorithms when the number of objects is much larger than the number of variables. *Statistical Papers*, 50, 711-720.](https://doi.org/10.1007/s00362-009-0251-7)
 3. [Andersson, M. (2009). A comparison of nine PLS1 algorithms. *Journal of Chemometrics*, 23(10), 518-529.](https://doi.org/10.1002/cem.1248)
 4. [NumPy](https://numpy.org/)
 5. [scikit-learn](https://scikit-learn.org/stable/)
 6. [JAX](https://jax.readthedocs.io/en/latest/)
-7. [Engstrøm, O.-C. G. (2024). Shortcutting Cross-Validation:
-    Efficiently Deriving Column-Wise Centered and Scaled Training Set
-    $\mathbf{X}^\mathbf{T}\mathbf{X}$ and
-    $\mathbf{X}^\mathbf{T}\mathbf{Y}$ Without Full
-    Recomputation of Matrix Products or Statistical Moments](https://arxiv.org/abs/2401.13185)
+7. [Engstrøm, O.-C. G. and Jensen, M. H. (2025). Fast Partition-Based Cross-Validation With Centering and Scaling for $\mathbf{X}^\mathbf{T}\mathbf{X}$ and $\mathbf{X}^\mathbf{T}\mathbf{Y}$](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008)
+8. [Becker and Ismail (2016). Accounting for sampling weights in PLS path modeling: Simulations and empirical examples. *European Management Journal*, 34(6), 606-617.](https://doi.org/10.1016/j.emj.2016.06.009)
+9. [Weighted mean. *National Institute of Standards and Technology*.](https://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weigmean.pdf)
+10. [Weighted standard deviation. *National Institute of Standards and Technology*.](https://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weightsd.pdf)
 
 
 ## Funding
-This work has been carried out as part of an industrial Ph. D. project receiving funding from [FOSS Analytical A/S](https://www.fossanalytics.com/) and [The Innovation Fund Denmark](https://innovationsfonden.dk/en). Grant number 1044-00108B.
+- Up until May 31st 2025, this work has been carried out as part of an industrial Ph. D. project receiving funding from [FOSS Analytical A/S](https://www.fossanalytics.com/) and [The Innovation Fund Denmark](https://innovationsfonden.dk/en). Grant number 1044-00108B.
+- From June 1st 2025 and onward, this work is sponsored by [FOSS Analytical A/S](https://www.fossanalytics.com/) and [The Innovation Fund Denmark](https://innovationsfonden.dk/en).
