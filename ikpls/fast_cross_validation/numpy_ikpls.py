@@ -501,6 +501,11 @@ class PLS:
             evaluating `metric_function` on the validation set corresponding to that
             value.
 
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and not all weights are non-negative.
+
         Notes
         -----
         The order of cross-validation folds is determined by the order of the unique

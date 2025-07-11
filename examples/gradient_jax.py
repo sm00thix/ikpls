@@ -23,6 +23,9 @@ from jax import numpy as jnp
 
 from ikpls.jax_ikpls_alg_1 import PLS as JAX_Alg_1
 
+# Allow JAX to use 64-bit floating point precision.
+jax.config.update("jax_enable_x64", True)
+
 
 @jax.jit
 def apply_1d_convolution(X: jnp.ndarray, conv_filter: jnp.ndarray) -> jnp.ndarray:

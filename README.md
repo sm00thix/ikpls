@@ -82,9 +82,14 @@ These are typical installation instructions that will be what most users are loo
 For customized installations, follow the instructions from the [JAX Installation
 Guide](https://jax.readthedocs.io/en/latest/installation.html).
 
-To ensure that JAX implementations use Float64, set the environment
+To ensure that JAX implementations use float64, set the environment
 variable JAX_ENABLE_X64=True as per the [Current
 Gotchas](https://github.com/google/jax#current-gotchas).
+Alternatively, float64 can be enabled with the following function call:
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+```
 
 ## Installation
 

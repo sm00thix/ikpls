@@ -424,8 +424,12 @@ class PLS(PLSBase):
         See Also
         --------
         stateless_fit : Performs the same operation but returns the output matrices
-        instead of storing them in the class instance.
+        instead of storing them in the class instance. stateless_fit does not raise an
+        error if `weights` are provided and not all weights are non-negative.
         """
+        if weights is not None:
+            if jnp.any(weights < 0):
+                raise ValueError("Weights must be non-negative.")
         self.A = A
         if not self.differentiable:
             self.max_stable_components = A

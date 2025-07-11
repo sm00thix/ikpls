@@ -19,12 +19,16 @@ E-mail: ocge@foss.dk
 
 from typing import Tuple
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 # For this example, we will use IKPLS Algorithm #1.
 # The interface for IKPLS Algorithm #2 is identical.
 from ikpls.jax_ikpls_alg_1 import PLS
+
+# Allow JAX to use 64-bit floating point precision.
+jax.config.update("jax_enable_x64", True)
 
 
 def cross_val_preprocessing(

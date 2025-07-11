@@ -201,9 +201,6 @@ class PLSBase(abc.ABC):
         b = b_last + r @ q.T
         return b
 
-    def _raise(self, ex):
-        raise ex
-
     @partial(jax.jit, static_argnums=0)
     def _initialize_input_matrices(
         self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array] = None
@@ -234,11 +231,6 @@ class PLSBase(abc.ABC):
         weights : Array of shape (N,) or None
             Weights for each observation, converted to the specified dtype. If None,
             then all observations are weighted equally.
-
-        Raises
-        ------
-        ValueError
-            If `weights` are provided and not all weights are non-negative.
         """
         X = jnp.asarray(X, dtype=self.dtype)
         Y = jnp.asarray(Y, dtype=self.dtype)
@@ -249,14 +241,6 @@ class PLSBase(abc.ABC):
         if weights is not None:
             weights = jnp.asarray(weights, dtype=self.dtype)
             weights = jnp.ravel(weights)
-            # Verify that weights are non-negative
-            jax.lax.cond(
-                jnp.any(weights < 0),
-                lambda: jax.debug.callback(
-                    self._raise, ValueError("Weights must be non-negative.")
-                ),
-                lambda: None,
-            )
         return X, Y, weights
 
     @partial(jax.jit, static_argnums=0)
@@ -944,6 +928,11 @@ class PLSBase(abc.ABC):
         Returns
         -------
         None.
+
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and not all weights are non-negative.
 
         Warns
         -----

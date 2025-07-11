@@ -10,9 +10,13 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
+import jax
 import numpy as np
 
 from ikpls.jax_ikpls_alg_1 import PLS
+
+# Allow JAX to use 64-bit floating point precision.
+jax.config.update("jax_enable_x64", True)
 
 if __name__ == "__main__":
     N = 100  # Number of samples.
