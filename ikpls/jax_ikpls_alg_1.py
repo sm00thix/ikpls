@@ -11,7 +11,7 @@ E-mail: ocge@foss.dk
 """
 
 from functools import partial
-from typing import Tuple, Union
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -182,7 +182,7 @@ class PLS(PLSBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _step_1(
-        self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array]
+        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array]
     ) -> jax.Array:
         """
         Perform the first step of Improved Kernel PLS Algorithm #1.
@@ -343,7 +343,7 @@ class PLS(PLSBase):
         return XTY, w, p, q, r, t
 
     def fit(
-        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Union[None, ArrayLike] = None
+        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
     ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -449,7 +449,7 @@ class PLS(PLSBase):
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
-        weights: Union[None, ArrayLike] = None,
+        weights: Optional[ArrayLike] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.

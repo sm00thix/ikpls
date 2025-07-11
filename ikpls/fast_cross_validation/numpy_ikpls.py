@@ -13,7 +13,7 @@ E-mail: ocge@foss.dk
 
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Union
+from typing import Any, Iterable, Optional
 
 import joblib
 import numpy as np
@@ -122,6 +122,7 @@ class PLS:
         self.N = None
         self.K = None
         self.M = None
+        self.cvm = None
         if self.algorithm == 1:
             self.all_indices = None
 
@@ -152,11 +153,11 @@ class PLS:
         npt.NDArray[np.floating],
         npt.NDArray[np.floating],
         npt.NDArray[np.floating],
-        Union[None, npt.NDArray[np.floating]],
-        Union[None, npt.NDArray[np.floating]],
-        Union[None, npt.NDArray[np.floating]],
-        Union[None, npt.NDArray[np.floating]],
-        Union[None, npt.NDArray[np.floating]],
+        Optional[npt.NDArray[np.floating]],
+        Optional[npt.NDArray[np.floating]],
+        Optional[npt.NDArray[np.floating]],
+        Optional[npt.NDArray[np.floating]],
+        Optional[npt.NDArray[np.floating]],
     ]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -188,23 +189,21 @@ class PLS:
             PLS scores matrix of X. Only Returned for Improved Kernel PLS Algorithm #1.
             If `self.algorithm` is 2, then this will be None.
 
-        training_X_mean : Array of shape (1, K)
-            Mean row of training X. Will be an array of zeros if `self.center` is
-            False.
+        training_X_mean : None or Array of shape (1, K)
+            Mean row of training X. Will be None if `self.center_X`, `self.center_Y`
+            and `self.scale_X` are all False.
 
-        training_Y_mean : Array of shape (1, M)
-            Mean row of training Y. Will be an array of zeros if `self.center` is
-            False.
+        training_Y_mean : None or Array of shape (1, M)
+            Mean row of training Y. Will be None if `self.center_X`, `self.center_Y`
+            and `self.scale_Y` are all False.
 
         training_X_std : Array of shape (1, K)
-            Sample standard deviation row of training X. Will be an array of ones if
-            `self.scale` is False. Any zero standard deviations will be replaced with
-            ones.
+            Sample standard deviation row of training X. Will be None if `self.scale_X`
+            is False.
 
         training_Y_std : Array of shape (1, M)
-            Sample standard deviation row of training Y. Will be an array of ones if
-            `self.scale` is False. Any zero standard deviations will be replaced with
-            ones.
+            Sample standard deviation row of training Y. Will be None if `self.scale_Y`
+            is False.
 
         Warns
         -----
@@ -330,11 +329,11 @@ class PLS:
         self,
         indices: npt.NDArray[np.int_],
         B: npt.NDArray[np.floating],
-        training_X_mean: Union[None, npt.NDArray[np.floating]],
-        training_Y_mean: Union[None, npt.NDArray[np.floating]],
-        training_X_std: Union[None, npt.NDArray[np.floating]],
-        training_Y_std: Union[None, npt.NDArray[np.floating]],
-        n_components: Union[None, int] = None,
+        training_X_mean: Optional[npt.NDArray[np.floating]],
+        training_Y_mean: Optional[npt.NDArray[np.floating]],
+        training_X_std: Optional[npt.NDArray[np.floating]],
+        training_Y_std: Optional[npt.NDArray[np.floating]],
+        n_components: Optional[int] = None,
     ) -> npt.NDArray[np.floating]:
         """
         Predicts with Improved Kernel PLS Algorithm #1 on `X` with `B` using
@@ -351,20 +350,16 @@ class PLS:
             PLS regression coefficients tensor.
 
         training_X_mean : None or Array of shape (1, K)
-            Mean row of training X. If None, then no centering is applied to the
-            predictor variables.
+            Mean row of training X.
 
         training_Y_mean : None or Array of shape (1, M)
-            Mean row of training Y. If None, then no centering is applied to the
-            target variables.
+            Mean row of training Y.
 
         training_X_std : None or Array of shape (1, K)
-            Sample standard deviation row of training X. If None, then no scaling is
-            applied to the predictor variables.
+            Sample standard deviation row of training X.
 
         training_Y_std : None or Array of shape (1, M)
-            Sample standard deviation row of training Y. If None, then no scaling is
-            applied to the target variables.
+            Sample standard deviation row of training Y.
 
         n_components : int or None, optional
             Number of components in the PLS model. If None, then all number of
@@ -407,7 +402,7 @@ class PLS:
             [
                 npt.NDArray[np.floating],
                 npt.NDArray[np.floating],
-                Union[None, npt.NDArray[np.floating]],
+                Optional[npt.NDArray[np.floating]],
             ],
             Any,
         ],
@@ -460,7 +455,7 @@ class PLS:
         A: int,
         folds: Iterable[Hashable],
         metric_function: Callable[[npt.ArrayLike, npt.ArrayLike], Any],
-        weights: Union[None, npt.ArrayLike] = None,
+        weights: Optional[npt.ArrayLike] = None,
         n_jobs=-1,
         verbose=10,
     ) -> dict[Hashable, Any]:

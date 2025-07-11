@@ -24,7 +24,22 @@ if __name__ == "__main__":
     Y = np.random.uniform(size=(N, M))
     weights = np.random.uniform(low=0, high=2, size=(N,))
 
-    jax_ikpls_alg_1 = PLS()
+    # For this example, we will use IKPLS Algorithm #1.
+    # The interface for IKPLS Algorithm #2 is identical.
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    jax_ikpls_alg_1 = PLS(
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+        verbose=True,
+    )
     jax_ikpls_alg_1.fit(X, Y, A, weights)
 
     # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all

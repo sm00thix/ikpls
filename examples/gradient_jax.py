@@ -58,7 +58,7 @@ def convolve_fit_mse(
     X: jnp.ndarray,
     Y: jnp.ndarray,
     weights: jnp.ndarray,
-    pls_alg,
+    pls_alg: JAX_Alg_1,
     A: int,
     n_components: Union[int, None] = None,
 ) -> Callable[[jnp.ndarray], float]:
@@ -97,10 +97,13 @@ if __name__ == "__main__":
     # Generate random data.
     jnp_X = jnp.array(np.random.uniform(size=(N, K)), dtype=jnp.float64)
     jnp_Y = jnp.array(np.random.uniform(size=(N, M)), dtype=jnp.float64)
+    jnp_w = jnp.array(np.random.uniform(size=(N,)), dtype=jnp.float64)
 
     filter_size = 7  # Filter size for convolution
     conv_filter = jnp.array(np.random.rand(filter_size))  # Random filter
 
+    # We will use IKPLS Algorithm #1 for this example.
+    # The interface for IKPLS Algorithm #2 is identical.
     diff_pls_alg_1 = JAX_Alg_1(differentiable=True, verbose=True)
 
     # Compute values and gradients for the conv_filter using mean squared error as the
@@ -110,7 +113,8 @@ if __name__ == "__main__":
     # Compute the gradient of the mean_squared_error of Y_true and Y_pred (with 20
     # components) with respect to the weights of the convolution filter.
     grad_fun = jax.grad(
-        convolve_fit_mse(jnp_X, jnp_Y, diff_pls_alg_1, A=A, n_components=A), argnums=0
+        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, diff_pls_alg_1, A=A, n_components=A),
+        argnums=0,
     )
     grad_alg_1 = grad_fun(conv_filter)
 
@@ -123,7 +127,7 @@ if __name__ == "__main__":
     # Compute the gradient of the mean_squared_error of Y_true and Y_pred (from 1 to 20
     # components) with respect to the weights of the convolution filter.
     jac_fun = jax.jacfwd(
-        convolve_fit_mse(jnp_X, jnp_Y, diff_pls_alg_1, A=A, n_components=None),
+        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, diff_pls_alg_1, A=A, n_components=None),
         argnums=0,
     )
     jac_alg_1 = jac_fun(conv_filter)

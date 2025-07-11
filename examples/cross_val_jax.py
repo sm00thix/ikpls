@@ -78,9 +78,20 @@ if __name__ == "__main__":
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
-    # Centering and scaling are enabled by default and computed over the
-    # training splits only to avoid data leakage from the validation splits.
-    jax_pls_alg_1 = PLS(verbose=True)
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    jax_pls_alg_1 = PLS(
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+        verbose=True,
+    )
 
     metric_names = ["mse", "best_num_components"]
     metric_values_dict = jax_pls_alg_1.cross_validate(

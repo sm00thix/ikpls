@@ -24,10 +24,21 @@ if __name__ == "__main__":
     X = np.random.uniform(size=(N, K))
     Y = np.random.uniform(size=(N, M))
 
-    # The other PLS algorithms and implementations have the same interface for fit()
-    # and predict(). The fast cross-validation implementation with IKPLS has a
-    # different interface.
-    np_ikpls_alg_1 = PLS(algorithm=1)
+    # For this example, we will use IKPLS Algorithm #1.
+    # The interface for IKPLS Algorithm #2 is identical.
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    np_ikpls_alg_1 = PLS(
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+    )
     np_ikpls_alg_1.fit(X, Y, A)
 
     # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all possible

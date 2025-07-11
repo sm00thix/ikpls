@@ -83,9 +83,21 @@ if __name__ == "__main__":
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
-    # Centering and scaling are enabled by default and computed over the
-    # training folds only to avoid data leakage from the validation folds.
-    np_pls_alg_1 = PLS(algorithm=1)
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    algorithm = 1
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    np_pls_alg_1 = PLS(
+        algorithm=algorithm,
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+    )
     params = {"A": A}
     np_pls_alg_1_results = cross_validate(
         np_pls_alg_1,

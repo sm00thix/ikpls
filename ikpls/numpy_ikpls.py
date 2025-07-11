@@ -12,7 +12,7 @@ E-mail: ocge@foss.dk
 
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Tuple, Union
+from typing import Any, Iterable, Optional, Tuple, Union
 
 import joblib
 import numpy as np
@@ -144,7 +144,7 @@ class PLS(BaseEstimator):
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
-        weights: Union[None, npt.ArrayLike] = None,
+        weights: Optional[npt.ArrayLike] = None,
     ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -383,7 +383,7 @@ class PLS(BaseEstimator):
                 T[i] = t.squeeze()
                 tTt = t.T @ t
                 p = (t.T @ X).T / tTt
-            elif self.algorithm == 2:
+            else:
                 rXTX = r.T @ XTX
                 tTt = rXTX @ r
                 p = rXTX.T / tTt
@@ -398,7 +398,7 @@ class PLS(BaseEstimator):
             self.B[i] = self.B[i - 1] + r @ q.T
 
     def predict(
-        self, X: npt.ArrayLike, n_components: Union[None, int] = None
+        self, X: npt.ArrayLike, n_components: Optional[int] = None
     ) -> npt.NDArray[np.floating]:
         """
         Predicts on `X` with `B` using `n_components` components. If `n_components` is
@@ -496,7 +496,7 @@ class PLS(BaseEstimator):
                 ],
             ],
         ] = None,
-        weights: Union[None, npt.ArrayLike] = None,
+        weights: Optional[npt.ArrayLike] = None,
         n_jobs: int = -1,
         verbose: int = 10,
     ) -> dict[str, Any]:

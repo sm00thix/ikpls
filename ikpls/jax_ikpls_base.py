@@ -16,7 +16,7 @@ import abc
 import warnings
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import jax
 import jax.experimental
@@ -201,10 +201,13 @@ class PLSBase(abc.ABC):
         b = b_last + r @ q.T
         return b
 
+    def _raise(self, ex):
+        raise ex
+
     @partial(jax.jit, static_argnums=0)
     def _initialize_input_matrices(
-        self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array] = None
-    ) -> Tuple[jax.Array, jax.Array, Union[None, jax.Array]]:
+        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array] = None
+    ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
         """
         Initialize the input matrices used in the PLS algorithm.
 
@@ -247,12 +250,17 @@ class PLSBase(abc.ABC):
             weights = jnp.asarray(weights, dtype=self.dtype)
             weights = jnp.ravel(weights)
             # Verify that weights are non-negative
-            if jnp.any(weights < 0):
-                raise ValueError("Weights must be non-negative.")
+            jax.lax.cond(
+                jnp.any(weights < 0),
+                lambda: jax.debug.callback(
+                    self._raise, ValueError("Weights must be non-negative.")
+                ),
+                lambda: None,
+            )
         return X, Y, weights
 
     @partial(jax.jit, static_argnums=0)
-    def get_mean(self, A: ArrayLike, weights: Union[None, ArrayLike] = None):
+    def get_mean(self, A: ArrayLike, weights: Optional[ArrayLike] = None):
         """
         Get the mean of the a matrix.
 
@@ -282,9 +290,9 @@ class PLSBase(abc.ABC):
         self,
         A: ArrayLike,
         mean: ArrayLike,
-        weights: Union[None, ArrayLike],
+        weights: Optional[ArrayLike],
         scale_dof: int,
-        avg_non_zero_weights: Union[None, float],
+        avg_non_zero_weights: Optional[float],
     ):
         """
         Get the standard deviation of a matrix.
@@ -338,7 +346,7 @@ class PLSBase(abc.ABC):
         self,
         X: jax.Array,
         Y: jax.Array,
-        weights: Union[None, jax.Array],
+        weights: Optional[jax.Array],
     ):
         """
         Preprocess the input matrices based on the centering and scaling parameters.
@@ -570,7 +578,7 @@ class PLSBase(abc.ABC):
 
     @abc.abstractmethod
     @partial(jax.jit, static_argnums=0)
-    def _step_1(self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array]):
+    def _step_1(self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array]):
         """
         Abstract method representing the first step in the PLS algorithm. This step
         should be implemented in concrete PLS classes.
@@ -717,7 +725,7 @@ class PLSBase(abc.ABC):
         if self.differentiable:
             jax.jit(self._step_3_base, static_argnums=(0, 1))
             return self._step_3_base(i, w, P, R)
-        jax.jit(self._step_3_base, static_argnums=(0))
+        jax.jit(self._step_3_base, static_argnums=0)
         return self._step_3_base(i, w, P, R)
 
     @partial(jax.jit, static_argnums=0)
@@ -809,7 +817,7 @@ class PLSBase(abc.ABC):
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
-        weights: Union[None, ArrayLike] = None,
+        weights: Optional[ArrayLike] = None,
     ) -> Union[
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
@@ -886,7 +894,7 @@ class PLSBase(abc.ABC):
 
     @abc.abstractmethod
     def fit(
-        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Union[None, ArrayLike] = None
+        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
     ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -954,11 +962,11 @@ class PLSBase(abc.ABC):
         self,
         X: ArrayLike,
         B: jax.Array,
-        n_components: Union[None, int] = None,
-        X_mean: Union[None, jax.Array] = None,
-        X_std: Union[None, jax.Array] = None,
-        Y_mean: Union[None, jax.Array] = None,
-        Y_std: Union[None, jax.Array] = None,
+        n_components: Optional[int] = None,
+        X_mean: Optional[jax.Array] = None,
+        X_std: Optional[jax.Array] = None,
+        Y_mean: Optional[jax.Array] = None,
+        Y_std: Optional[jax.Array] = None,
     ) -> jax.Array:
         """
         Predicts with Improved Kernel PLS Algorithm #1 on `X` with `B` using
@@ -1027,7 +1035,7 @@ class PLSBase(abc.ABC):
             Y_pred = Y_pred + Y_mean
         return Y_pred
 
-    def predict(self, X: ArrayLike, n_components: Union[None, int] = None) -> jax.Array:
+    def predict(self, X: ArrayLike, n_components: Optional[int] = None) -> jax.Array:
         """
         Predicts with Improved Kernel PLS Algorithm #1 on `X` with `B` using
         `n_components` components. If `n_components` is None, then predictions are
@@ -1066,10 +1074,10 @@ class PLSBase(abc.ABC):
         X_train: ArrayLike,
         Y_train: ArrayLike,
         A: int,
-        weights_train: Union[None, ArrayLike],
+        weights_train: Optional[ArrayLike],
         X_val: ArrayLike,
         Y_val: ArrayLike,
-        weights_val: Union[None, ArrayLike],
+        weights_val: Optional[ArrayLike],
         metric_function: Union[
             Callable[
                 [
@@ -1211,7 +1219,7 @@ class PLSBase(abc.ABC):
                 ],
             ],
         ] = None,
-        weights: Union[None, ArrayLike] = None,
+        weights: Optional[ArrayLike] = None,
         show_progress=True,
     ) -> dict[str, Any]:
         """
@@ -1339,7 +1347,7 @@ class PLSBase(abc.ABC):
         train_idxs: jax.Array,
         val_idxs: jax.Array,
         A: int,
-        weights: Union[None, ArrayLike],
+        weights: Optional[ArrayLike],
         preprocessing_function: Union[
             None,
             Union[

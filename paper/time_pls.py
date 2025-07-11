@@ -205,14 +205,14 @@ def main():
     else:
         num_cores = os.cpu_count() if n_jobs == -1 else n_jobs
 
-    # # don't repeat yourself
-    # if not os.path.exists(args.output):
-    #     with open(args.output, "w") as f:
-    #         f.write("model,n_components,n_splits,n,k,m,time,inferred,njobs\n")
-    # with open(args.output, "a") as f:
-    #     f.write(
-    #         f"{model},{n_components},{n_splits},{n},{k},{m},{time},{estimate},{num_cores}\n"
-    #     )
+    # don't repeat yourself
+    if not os.path.exists(args.output):
+        with open(args.output, "w") as f:
+            f.write("model,n_components,n_splits,n,k,m,time,inferred,njobs\n")
+    with open(args.output, "a") as f:
+        f.write(
+            f"{model},{n_components},{n_splits},{n},{k},{m},{time},{estimate},{num_cores}\n"
+        )
 
 
 if __name__ == "__main__":

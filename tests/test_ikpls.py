@@ -12,10 +12,6 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
-import os
-
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 from collections.abc import Callable
 from itertools import product
 from typing import List, Optional, Tuple, Union
@@ -104,7 +100,7 @@ class TestClass:
         target_values = self.csv[values].to_numpy()
         return target_values
 
-    def load_weights(self, kind: Union[None, float]) -> npt.NDArray[np.float64]:
+    def load_weights(self, kind: Optional[float]) -> npt.NDArray[np.float64]:
         """
         Description
         -----------
@@ -112,7 +108,7 @@ class TestClass:
 
         Parameters
         ----------
-        kind : Union[None, float]
+        kind : Optional[float]
             The kind of weights to generate. If None, random weights are generated.
             Otherwise, constant weights are generated based on the specified value.
 
@@ -256,7 +252,6 @@ class TestClass:
         YW = weights_matrix @ Y
         wls_B = np.linalg.lstsq(XW, YW)[0]
         wls_pred = X @ wls_B
-        wls_pred = wls_pred
         if scale_Y:
             wls_pred *= Y_std
         if center_Y:
@@ -553,9 +548,7 @@ class TestClass:
     def jax_rmse_per_component(
         Y_true: jnp.ndarray,
         Y_pred: jnp.ndarray,
-        weights: Union[None, jnp.ndarray] = None,
-        *args,
-        **kwargs,
+        weights: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
         Description
@@ -569,6 +562,10 @@ class TestClass:
 
         Y_pred : Array of shape (A, N, M)
             Predicted target values.
+
+        weights : Optional[Array of shape (N,)]
+            Weights for the true target values. If None, all samples are equally
+            weighted.
 
         Returns
         -------
@@ -589,7 +586,7 @@ class TestClass:
     def rmse_per_component(
         Y_true: npt.NDArray,
         Y_pred: npt.NDArray,
-        weights: Union[None, np.ndarray] = None,
+        weights: Optional[npt.NDArray] = None,
     ) -> npt.NDArray:
         """
         Description
@@ -603,6 +600,10 @@ class TestClass:
 
         Y_pred : Array of shape (A, N, M)
             Predicted target values.
+
+        weights : Optional[Array of shape (N,)]
+            Weights for the true target values. If None, all samples are equally
+            weighted.
 
         Returns
         -------
@@ -688,7 +689,12 @@ class TestClass:
 
     @staticmethod
     def snv(
-        X_train: npt.NDArray, Y_train, X_val, Y_val, *args, **kwargs
+        X_train: npt.NDArray,
+        Y_train: npt.NDArray,
+        X_val: npt.NDArray,
+        Y_val: npt.NDArray,
+        train_weights: Optional[npt.NDArray] = None,
+        val_weights: Optional[npt.NDArray] = None,
     ) -> npt.NDArray:
         """
         Description
@@ -709,11 +715,11 @@ class TestClass:
         Y_val : Array of shape (N_val, M)
             Validation target values.
 
-        *args
-            Additional arguments. Unused.
+        train_weights : Optional[Array of shape (N_train,)]
+            Weights for the training data. Unused.
 
-        **kwargs
-            Additional keyword arguments. Unused.
+        val_weights : Optional[Array of shape (N_val,)]
+            Weights for the validation data. Unused.
 
         Returns
         -------
@@ -744,8 +750,8 @@ class TestClass:
         Y_train: jnp.ndarray,
         X_val: jnp.ndarray,
         Y_val: jnp.ndarray,
-        *args,
-        **kwargs,
+        train_weights: Optional[jnp.ndarray] = None,
+        val_weights: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
         Description
@@ -766,11 +772,11 @@ class TestClass:
         Y_val : Array of shape (N_val, M)
             Validation target values.
 
-        *args
-            Additional arguments. Unused.
+        train_weights : Optional[Array of shape (N_train,)]
+            Weights for the training data. Unused.
 
-        **kwargs
-            Additional keyword arguments. Unused.
+        val_weights : Optional[Array of shape (N_val,)]
+            Weights for the validation data. Unused.
 
         Returns
         -------
@@ -789,15 +795,6 @@ class TestClass:
         X_train_snv = TestClass._jax_snv(jnp.asarray(X_train))
         X_val_snv = TestClass._jax_snv(jnp.asarray(X_val))
         return X_train_snv, Y_train, X_val_snv, Y_val
-
-    @staticmethod
-    def pred_metric(Y_val, Y_pred, *args, **kwargs):
-        """
-        Description
-        -----------
-        A metric function that simply returns the predicted values.
-        """
-        return Y_pred
 
     def assert_matrix_orthogonal(
         self, M: npt.NDArray, atol: float, rtol: float
@@ -4172,7 +4169,10 @@ class TestClass:
                 for i in range(M)
             ]
 
-            err_msg = f"Use weights: {use_w}, Ddof: {ddof}, Center_X: {center_X}, Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+            err_msg = (
+                f"Use weights: {use_w}, Ddof: {ddof}, Center_X: {center_X}, "
+                f"Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+            )
             assert_allclose(
                 np_pls_alg_2_best_rmses,
                 np_pls_alg_1_best_rmses,
@@ -4506,8 +4506,8 @@ class TestClass:
         """
         Description
         -----------
-        This method checks whether weighted PLS with the maximum number of components yields the
-        same results as weighted least squares.
+        This method checks whether weighted PLS with the maximum number of components
+        yields the same results as weighted least squares.
 
         Parameters
         ----------
@@ -4636,7 +4636,10 @@ class TestClass:
             )
 
             # Check that all are equal
-            err_msg = f"Center_X: {center_X}, Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+            err_msg = (
+                f"Center_X: {center_X}, Center_Y: {center_Y}, "
+                f"Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+            )
             assert_allclose(
                 weights_one_wls_pred,
                 ols_pred,
@@ -4754,7 +4757,10 @@ class TestClass:
             for i, (pred_reduced_input, pred) in enumerate(
                 zip(pls_preds_reduced_input, pls_preds)
             ):
-                err_msg = f"Model {i}, Center_X: {center_X}, Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                err_msg = (
+                    f"Model {i}, Center_X: {center_X}, Center_Y: "
+                    f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                )
                 assert_allclose(
                     pred_reduced_input,
                     pred,
@@ -5216,8 +5222,8 @@ class TestClass:
         """
         Description
         -----------
-        This test loads input predictor variables, a single target variable, weights, and
-        split indices for cross-validation. It then calls the
+        This test loads input predictor variables, a single target variable, weights,
+        and split indices for cross-validation. It then calls the
         `check_weighted_cross_val_with_preprocessing` method to validate the
         cross-validation results for the PLS algorithms with preprocessing.
 
@@ -5391,15 +5397,14 @@ class TestClass:
             if isinstance(model, FastCVPLS):
                 # FastCVPLS has no fit method
                 continue
-            else:
-                # Assert that a ValueError is raised when weights are negative
-                with pytest.raises(ValueError, match=match_str):
-                    model.fit(
-                        X=X,
-                        Y=Y,
-                        A=min(X.shape[0], X.shape[1]),
-                        weights=weights,
-                    )
+            # Assert that a ValueError is raised when weights are negative
+            with pytest.raises(ValueError, match=match_str):
+                model.fit(
+                    X=X,
+                    Y=Y,
+                    A=min(X.shape[0], X.shape[1]),
+                    weights=weights,
+                )
 
         for model in models:
             with pytest.raises(ValueError, match=match_str):
@@ -5428,9 +5433,9 @@ class TestClass:
         Description
         -----------
         This test loads input predictor variables, a single target variable, weights,
-        and split indices for cross-validation. It then calls the `check_nonnegative_weights`
-        method to validate that the PLS algorithms raise a ValueError when negative weights
-        are provided.
+        and split indices for cross-validation. It then calls the
+        `check_nonnegative_weights` method to validate that the PLS algorithms raise a
+        ValueError when negative weights are provided.
 
         Returns
         -------

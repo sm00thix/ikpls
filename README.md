@@ -18,7 +18,7 @@
 
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
 
-## NEW IN 2.0.1: Fast cross-validation for weighted IKPLS.
+## NEW IN 3.0.0: Fast cross-validation for weighted IKPLS.
 The `ikpls` software package now directly depends on the `cvmatrix` software package to implement the fast cross-validation by Engstrøm and Jensen [[7]]. `cvmatrix` extends the fast cross-validation algorithms to correctly handle the weighted cases. The extension includes support for all 16 (12 unique) combinations of weighted centering and weighted scaling for X and Y, increasing neither time nor space complexity.
 
 ## NEW IN 2.0.0: Weighted IKPLS
@@ -111,48 +111,49 @@ Gotchas](https://github.com/google/jax#current-gotchas).
 > from ikpls.numpy_ikpls import PLS
 >
 >
->  N = 100  # Number of samples.
->  K = 50  # Number of features.
->  M = 10  # Number of targets.
->  A = 20  # Number of latent variables (PLS components).
+> N = 100  # Number of samples.
+> K = 50  # Number of features.
+> M = 10  # Number of targets.
+> A = 20  # Number of latent variables (PLS components).
 >
->  X = np.random.uniform(size=(N, K))
->  Y = np.random.uniform(size=(N, M))
+> X = np.random.uniform(size=(N, K)) # Predictor variables
+> Y = np.random.uniform(size=(N, M)) # Target variables
+> w = np.random.uniform(size=(N, )) # sample weights
 >
->  # The other PLS algorithms and implementations have the same interface for fit()
->  # and predict(). The fast cross-validation implementation with IKPLS has a
->  # different interface.
->  np_ikpls_alg_1 = PLS(algorithm=1)
->  np_ikpls_alg_1.fit(X, Y, A)
+> # The other PLS algorithms and implementations have the same interface for fit()
+> # and predict(). The fast cross-validation implementation with IKPLS has a
+> # different interface.
+> np_ikpls_alg_1 = PLS(algorithm=1)
+> np_ikpls_alg_1.fit(X, Y, A, w)
 >
->  # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all possible
->  # numbers of components up to and including A.
->  y_pred = np_ikpls_alg_1.predict(X)
+> # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all possible
+> # numbers of components up to and including A.
+> y_pred = np_ikpls_alg_1.predict(X)
 >
->  # Has shape (N, M) = (100, 10).
->  y_pred_20_components = np_ikpls_alg_1.predict(X, n_components=20)
->  (y_pred_20_components == y_pred[19]).all()  # True
+> # Has shape (N, M) = (100, 10).
+> y_pred_20_components = np_ikpls_alg_1.predict(X, n_components=20)
+> (y_pred_20_components == y_pred[19]).all()  # True
 >
->  # The internal model parameters can be accessed as follows:
+> # The internal model parameters can be accessed as follows:
 >
->  # Regression coefficients tensor of shape (A, K, M) = (20, 50, 10).
->  np_ikpls_alg_1.B
+> # Regression coefficients tensor of shape (A, K, M) = (20, 50, 10).
+> np_ikpls_alg_1.B
 >
->  # X weights matrix of shape (K, A) = (50, 20).
->  np_ikpls_alg_1.W
+> # X weights matrix of shape (K, A) = (50, 20).
+> np_ikpls_alg_1.W
 >
->  # X loadings matrix of shape (K, A) = (50, 20).
->  np_ikpls_alg_1.P
+> # X loadings matrix of shape (K, A) = (50, 20).
+> np_ikpls_alg_1.P
 >
->  # Y loadings matrix of shape (M, A) = (10, 20).
->  np_ikpls_alg_1.Q
+> # Y loadings matrix of shape (M, A) = (10, 20).
+> np_ikpls_alg_1.Q
 >
->  # X rotations matrix of shape (K, A) = (50, 20).
->  np_ikpls_alg_1.R
+> # X rotations matrix of shape (K, A) = (50, 20).
+> np_ikpls_alg_1.R
 >
->  # X scores matrix of shape (N, A) = (100, 20).
->  # This is only computed for IKPLS Algorithm #1.
->  np_ikpls_alg_1.T
+> # X scores matrix of shape (N, A) = (100, 20).
+> # This is only computed for IKPLS Algorithm #1.
+> np_ikpls_alg_1.T
 > ```
 
 ### Examples
