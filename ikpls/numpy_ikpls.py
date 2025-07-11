@@ -525,18 +525,19 @@ class PLS(BaseEstimator):
             An iterable defining cross-validation splits. Each unique value in
             `folds` corresponds to a different fold.
 
-        metric_function : Callable receiving arrays `Y_val`, `Y_pred`, and, if
-        `weights` is not None, also, `weights_val`, and returning Any.
+        metric_function : Callable receiving arrays `Y_val` (N_val, M), `Y_pred`\
+        (A, N_val, M), and, if `weights` is not None, also, `weights_val` (N_val,),\
+        and returning Any.
             Computes a metric based on true values `Y_val` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
 
         preprocessing_function : Callable or None, optional, default=None,
-        If Callable, it should receive arrays `X_train`, `Y_train`, `X_val`, `Y_val`,
-        and, if `weights` is not None, also `weights_train`, and `weights_val`, and
-        returning a Tuple of preprocessed `X_train`, `Y_train`, `X_val`, and `Y_val`.
             A function that preprocesses the training and validation data for each
             fold. It should return preprocessed arrays for `X_train`, `Y_train`,
-            `X_val`, and `Y_val`.
+            `X_val`, and `Y_val`. If Callable, it should receive arrays `X_train`,
+            `Y_train`, `X_val`, `Y_val`, and, if `weights` is not None, also
+            `weights_train`, and `weights_val`, and returning a Tuple of preprocessed
+            `X_train`, `Y_train`, `X_val`, and `Y_val`.
 
         weights : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
