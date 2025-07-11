@@ -12,7 +12,7 @@ The code includes the following functions:
     to the weights of the convolution filter.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 from typing import Callable, Union
@@ -22,6 +22,9 @@ import numpy as np
 from jax import numpy as jnp
 
 from ikpls.jax_ikpls_alg_1 import PLS as JAX_Alg_1
+
+# Allow JAX to use 64-bit floating point precision.
+jax.config.update("jax_enable_x64", True)
 
 
 @jax.jit
@@ -38,12 +41,15 @@ def apply_1d_convolution(X: jnp.ndarray, conv_filter: jnp.ndarray) -> jnp.ndarra
 
 
 @jax.jit
-def mean_squared_error(Y_true: jnp.ndarray, Y_pred: jnp.ndarray) -> float:
+def weighted_mean_squared_error(
+    Y_true: jnp.ndarray, Y_pred: jnp.ndarray, weights: jnp.ndarray
+) -> float:
     """
-    Compute the mean squared error between the true and predicted values.
+    Compute the weighted mean squared error between the true and predicted values.
     """
     # Y_true is a matrix of shape (N, M) = (100, 10)
     # Y_pred is a matrix of shape (N, M) = (100, 10) or (A, N, M) = (20, 100, 10)
+    # Y_pred is a
     e = Y_true - Y_pred  # Shape (N, M) or (A, N, M)
     se = e**2  # Shape (N, M) or (A, N, M)
     mse = jnp.mean(se, axis=(-2, -1))  # Shape () or (A,)
@@ -54,7 +60,8 @@ def mean_squared_error(Y_true: jnp.ndarray, Y_pred: jnp.ndarray) -> float:
 def convolve_fit_mse(
     X: jnp.ndarray,
     Y: jnp.ndarray,
-    pls_alg,
+    weights: jnp.ndarray,
+    pls_alg: JAX_Alg_1,
     A: int,
     n_components: Union[int, None] = None,
 ) -> Callable[[jnp.ndarray], float]:
@@ -73,12 +80,12 @@ def convolve_fit_mse(
         filtered_X = apply_1d_convolution(X, conv_filter)
 
         # We must use stateless_fit() because we are using JAX's autodiff.
-        matrices = pls_alg.stateless_fit(filtered_X, Y, A)
+        matrices = pls_alg.stateless_fit(filtered_X, Y, A, weights)
         B = matrices[0]  # Extract the regression matrix
 
         # Predict the values.
         Y_pred = pls_alg.stateless_predict(filtered_X, B, n_components)
-        mse_loss = mean_squared_error(Y, Y_pred)
+        mse_loss = weighted_mean_squared_error(Y, Y_pred, weights)
         return mse_loss
 
     return helper
@@ -93,10 +100,13 @@ if __name__ == "__main__":
     # Generate random data.
     jnp_X = jnp.array(np.random.uniform(size=(N, K)), dtype=jnp.float64)
     jnp_Y = jnp.array(np.random.uniform(size=(N, M)), dtype=jnp.float64)
+    jnp_w = jnp.array(np.random.uniform(size=(N,)), dtype=jnp.float64)
 
     filter_size = 7  # Filter size for convolution
     conv_filter = jnp.array(np.random.rand(filter_size))  # Random filter
 
+    # We will use IKPLS Algorithm #1 for this example.
+    # The interface for IKPLS Algorithm #2 is identical.
     diff_pls_alg_1 = JAX_Alg_1(differentiable=True, verbose=True)
 
     # Compute values and gradients for the conv_filter using mean squared error as the
@@ -106,7 +116,8 @@ if __name__ == "__main__":
     # Compute the gradient of the mean_squared_error of Y_true and Y_pred (with 20
     # components) with respect to the weights of the convolution filter.
     grad_fun = jax.grad(
-        convolve_fit_mse(jnp_X, jnp_Y, diff_pls_alg_1, A=A, n_components=A), argnums=0
+        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, diff_pls_alg_1, A=A, n_components=A),
+        argnums=0,
     )
     grad_alg_1 = grad_fun(conv_filter)
 
@@ -119,7 +130,7 @@ if __name__ == "__main__":
     # Compute the gradient of the mean_squared_error of Y_true and Y_pred (from 1 to 20
     # components) with respect to the weights of the convolution filter.
     jac_fun = jax.jacfwd(
-        convolve_fit_mse(jnp_X, jnp_Y, diff_pls_alg_1, A=A, n_components=None),
+        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, diff_pls_alg_1, A=A, n_components=None),
         argnums=0,
     )
     jac_alg_1 = jac_fun(conv_filter)

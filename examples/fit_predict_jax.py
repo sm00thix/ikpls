@@ -7,12 +7,16 @@ internal model parameters can also be accessed for further analysis.
 Note: The script assumes that the 'ikpls' package is installed and accessible.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
+import jax
 import numpy as np
 
 from ikpls.jax_ikpls_alg_1 import PLS
+
+# Allow JAX to use 64-bit floating point precision.
+jax.config.update("jax_enable_x64", True)
 
 if __name__ == "__main__":
     N = 100  # Number of samples.
@@ -20,10 +24,25 @@ if __name__ == "__main__":
     M = 10  # Number of targets.
     A = 20  # Number of latent variables (PLS components).
 
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
+    weights = np.random.uniform(size=(N,))
 
-    jax_ikpls_alg_1 = PLS()
+    # For this example, we will use IKPLS Algorithm #1.
+    # The interface for IKPLS Algorithm #2 is identical.
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    jax_ikpls_alg_1 = PLS(
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+    )
     jax_ikpls_alg_1.fit(X, Y, A)
 
     # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all

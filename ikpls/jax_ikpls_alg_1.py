@@ -7,11 +7,11 @@ The class is implemented using JAX for end-to-end differentiability. Additionall
 allows CPU, GPU, and TPU execution.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 from functools import partial
-from typing import Tuple, Union
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -38,13 +38,17 @@ class PLS(PLSBase):
 
     scale_X : bool, default=True
         Whether to scale `X` before fitting by dividing each row with the row of `X`'s
-        column-wise standard deviations. Bessel's correction for the unbiased estimate
-        of the sample standard deviation is used.
+        column-wise standard deviations.
 
     scale_Y : bool, default=True
-        Whether to scale `Y` before fitting by dividing each row with the row of `X`'s
-        column-wise standard deviations. Bessel's correction for the unbiased estimate
-        of the sample standard deviation is used.
+        Whether to scale `Y` before fitting by dividing each row with the row of `Y`'s
+        column-wise standard deviations.
+
+    ddof : int, default=1
+        The delta degrees of freedom to use when computing the sample standard
+        deviation. A value of 0 corresponds to the biased estimate of the sample
+        standard deviation, while a value of 1 corresponds to Bessel's correction for
+        the sample standard deviation.
 
     copy : bool, optional, default=True
         Whether to copy `X` and `Y` in fit before potentially applying centering and
@@ -82,6 +86,7 @@ class PLS(PLSBase):
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
+        ddof: int = 1,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
         differentiable: bool = False,
@@ -93,6 +98,7 @@ class PLS(PLSBase):
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            ddof=ddof,
             copy=copy,
             dtype=dtype,
             differentiable=differentiable,
@@ -176,7 +182,7 @@ class PLS(PLSBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _step_1(
-        self, X: jax.Array, Y: jax.Array, weights: Union[None, jax.Array]
+        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array]
     ) -> jax.Array:
         """
         Perform the first step of Improved Kernel PLS Algorithm #1.
@@ -337,7 +343,7 @@ class PLS(PLSBase):
         return XTY, w, p, q, r, t
 
     def fit(
-        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Union[None, ArrayLike] = None
+        self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
     ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -404,6 +410,11 @@ class PLS(PLSBase):
         -------
         None.
 
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and not all weights are non-negative.
+
         Warns
         -----
         UserWarning.
@@ -413,8 +424,12 @@ class PLS(PLSBase):
         See Also
         --------
         stateless_fit : Performs the same operation but returns the output matrices
-        instead of storing them in the class instance.
+        instead of storing them in the class instance. stateless_fit does not raise an
+        error if `weights` are provided and not all weights are non-negative.
         """
+        if weights is not None:
+            if jnp.any(weights < 0):
+                raise ValueError("Weights must be non-negative.")
         self.A = A
         if not self.differentiable:
             self.max_stable_components = A
@@ -438,7 +453,7 @@ class PLS(PLSBase):
         X: ArrayLike,
         Y: ArrayLike,
         A: int,
-        weights: Union[None, ArrayLike] = None,
+        weights: Optional[ArrayLike] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -496,6 +511,11 @@ class PLS(PLSBase):
         Y_std : Array of shape (1, M) or None
             Sample standard deviation of Y. If scaling is not performed, this is None.
             If weights are used, then this is the weighted standard deviation.
+
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and not all weights are non-negative.
 
         Warns
         -----

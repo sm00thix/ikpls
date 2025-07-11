@@ -1,12 +1,11 @@
 """
-This file contains an example implementation of fast cross-validation using IKPLS.
-It demonstrates how to perform cross-validation using the fast cross-validation
-algorithm with column-wise centering and scaling. It also demonstrates metric
-computation and evaluation.
+This file contains an example implementation of cross-validation using IKPLS.
+It demonstrates how to perform weighted cross-validation with column-wise centering and
+scaling. It also demonstrates metric computation and evaluation.
 
 The code includes the following functions:
-- `mse_for_each_target`: A function to compute the mean squared error for each target
-    and the number of components that achieves the lowest MSE for each target.
+- `wmse_for_each_target`: A function to compute the weigthed mean squared error for each
+    target and the number of components that achieves the lowest MSE for each target.
 
 To run the cross-validation, execute the file.
 
@@ -18,10 +17,27 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.fast_cross_validation.numpy_ikpls import PLS
+from ikpls.numpy_ikpls import PLS
 
 
-def mse_for_each_target(Y_true, Y_pred):
+def cross_val_preprocessing(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    X_val: np.ndarray,
+    Y_val: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Apply preprocessing to each split of the cross-validation. Here, we just use the
+    identity function. This function will be applied before any potential centering and
+    scaling.
+    """
+    return X_train, Y_train, X_val, Y_val
+
+
+def mse_for_each_target(
+    Y_true: np.ndarray,
+    Y_pred: np.ndarray,
+):
     """
     We can return anything we want. Here, we compute the mean squared error for each
     target and the number of components that achieves the lowest MSE for each target.
@@ -31,7 +47,7 @@ def mse_for_each_target(Y_true, Y_pred):
     e = Y_true - Y_pred  # Shape (A, N, M)
     se = e**2  # Shape (A, N, M)
 
-    # Compute the mean over samples. Shape (A, M).
+    # Compute the weighted mean over samples. Shape (A, M).
     mse = np.mean(se, axis=-2)
 
     # The number of components that minimizes the MSE for each target. Shape (M,).
@@ -78,7 +94,7 @@ if __name__ == "__main__":
     algorithm = 1
     center_X = center_Y = scale_X = scale_Y = True
     ddof = 0
-    np_pls_alg_1_fast_cv = PLS(
+    np_pls_alg_1 = PLS(
         algorithm=algorithm,
         center_X=center_X,
         center_Y=center_Y,
@@ -86,11 +102,12 @@ if __name__ == "__main__":
         scale_Y=scale_Y,
         ddof=ddof,
     )
-    np_pls_alg_1_fast_cv_results = np_pls_alg_1_fast_cv.cross_validate(
+    np_pls_alg_1_cv_mses = np_pls_alg_1.cross_validate(
         X=X,
         Y=Y,
         A=A,
         folds=splits,
+        preprocessing_function=None,
         metric_function=mse_for_each_target,
         n_jobs=-1,
         verbose=10,
@@ -107,7 +124,7 @@ if __name__ == "__main__":
     lowest_val_mses = np.asarray(
         [
             [
-                np_pls_alg_1_fast_cv_results[split][f"lowest_mse_target_{i}"]
+                np_pls_alg_1_cv_mses[split][f"lowest_mse_target_{i}"]
                 for split in unique_splits
             ]
             for i in range(M)
@@ -119,9 +136,7 @@ if __name__ == "__main__":
     best_num_components = np.asarray(
         [
             [
-                np_pls_alg_1_fast_cv_results[split][
-                    f"num_components_lowest_mse_target_{i}"
-                ]
+                np_pls_alg_1_cv_mses[split][f"num_components_lowest_mse_target_{i}"]
                 for split in unique_splits
             ]
             for i in range(M)

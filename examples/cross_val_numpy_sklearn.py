@@ -15,7 +15,7 @@ To run the cross-validation, execute the file.
 Note: The code assumes the availability of the `ikpls` package and its dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import numpy as np
@@ -24,14 +24,14 @@ from sklearn.model_selection import cross_validate
 from ikpls.numpy_ikpls import PLS
 
 
-def cv_splitter(splits: np.ndarray):
+def cv_splitter(folds: np.ndarray):
     """
     Generate indices to split data into training and validation sets.
     """
-    uniq_splits = np.unique(splits)
-    for split in uniq_splits:
-        train_idxs = np.nonzero(splits != split)[0]
-        val_idxs = np.nonzero(splits == split)[0]
+    uniq_folds = np.unique(folds)
+    for split in uniq_folds:
+        train_idxs = np.nonzero(folds != split)[0]
+        val_idxs = np.nonzero(folds == split)[0]
         yield train_idxs, val_idxs
 
 
@@ -73,38 +73,50 @@ if __name__ == "__main__":
     K = 50  # Number of features.
     M = 10  # Number of targets.
     A = 20  # Number of latent variables (PLS components).
-    splits = np.random.randint(
+    folds = np.random.randint(
         0, 5, size=N
-    )  # Randomly assign each sample to one of 5 splits.
-    number_of_splits = np.unique(splits).shape[0]
+    )  # Randomly assign each sample to one of 5 folds.
+    number_of_folds = np.unique(folds).shape[0]
 
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
-    # Centering and scaling are enabled by default and computed over the
-    # training splits only to avoid data leakage from the validation splits.
-    np_pls_alg_1 = PLS(algorithm=1)
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    algorithm = 1
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    np_pls_alg_1 = PLS(
+        algorithm=algorithm,
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+    )
     params = {"A": A}
     np_pls_alg_1_results = cross_validate(
         np_pls_alg_1,
         X,
         Y,
-        cv=cv_splitter(splits),
+        cv=cv_splitter(folds),
         scoring=mse_for_each_target,
         params=params,
         return_estimator=False,
         n_jobs=-1,
     )
 
-    # Shape (M, splits) = (10, number_of_splits).
+    # Shape (M, folds) = (10, number_of_folds).
     # Lowest MSE for each target for each split.
     lowest_val_mses = np.array(
         [np_pls_alg_1_results[f"test_lowest_mse_target_{i}"] for i in range(M)]
     )
 
-    # Shape (M, splits) = (10, number_of_splits).
+    # Shape (M, folds) = (10, number_of_folds).
     # Number of components that achieves the lowest MSE for each target for each split.
     best_num_components = np.array(
         [

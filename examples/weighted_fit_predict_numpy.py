@@ -7,7 +7,7 @@ internal model parameters can also be accessed for further analysis.
 Note: The script assumes that the 'ikpls' package is installed and accessible.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import numpy as np
@@ -21,14 +21,25 @@ if __name__ == "__main__":
     A = 20  # Number of latent variables (PLS components).
 
     # Using float64 is important for numerical stability.
-    X = np.random.uniform(size=(N, K)).astype(np.float64)
-    Y = np.random.uniform(size=(N, M)).astype(np.float64)
-    weights = np.random.uniform(low=0, high=2, size=(N,)).astype(np.float64)
+    X = np.random.uniform(size=(N, K))
+    Y = np.random.uniform(size=(N, M))
+    weights = np.random.uniform(low=0, high=2, size=(N,))
 
-    # The other PLS algorithms and implementations have the same interface for fit()
-    # and predict(). The fast cross-validation implementation with IKPLS has a
-    # different interface.
-    np_ikpls_alg_1 = PLS(algorithm=1)
+    # For this example, we will use IKPLS Algorithm #1.
+    # The interface for IKPLS Algorithm #2 is identical.
+    # Centering and scaling are computed over the training splits
+    # only to avoid data leakage from the validation splits.
+    # ddof is the delta degrees of freedom for the standard deviation.
+    # ddof=0 is the biased estimator, ddof=1 is the unbiased estimator.
+    center_X = center_Y = scale_X = scale_Y = True
+    ddof = 0
+    np_ikpls_alg_1 = PLS(
+        center_X=center_X,
+        center_Y=center_Y,
+        scale_X=scale_X,
+        scale_Y=scale_Y,
+        ddof=ddof,
+    )
     np_ikpls_alg_1.fit(X, Y, A, weights)
 
     # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all possible

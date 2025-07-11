@@ -1,10 +1,7 @@
 import argparse
 import os
 
-from ikpls.fast_cross_validation.numpy_ikpls import PLS as NP_PLS_FCV
-from ikpls.jax_ikpls_alg_1 import PLS as JAX_PLS_Alg_1
-from ikpls.jax_ikpls_alg_2 import PLS as JAX_PLS_Alg_2
-from ikpls.numpy_ikpls import PLS as NP_PLS
+import jax
 from timings.timings import (
     SK_PLS_All_Components,
     cross_val_cpu_pls,
@@ -15,7 +12,10 @@ from timings.timings import (
     single_fit_gpu_pls,
 )
 
-import jax
+from ikpls.fast_cross_validation.numpy_ikpls import PLS as NP_PLS_FCV
+from ikpls.jax_ikpls_alg_1 import PLS as JAX_PLS_Alg_1
+from ikpls.jax_ikpls_alg_2 import PLS as JAX_PLS_Alg_2
+from ikpls.numpy_ikpls import PLS as NP_PLS
 
 jax.config.update("jax_enable_x64", True)
 
@@ -185,7 +185,7 @@ def main():
                     n_components,
                     n_splits=n_splits,
                     n_jobs=n_jobs,
-                    verbose=1,
+                    verbose=100,
                 )
             else:
                 time = cross_val_cpu_pls(

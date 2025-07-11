@@ -7,12 +7,12 @@ The PLS class subclasses scikit-learn's BaseEstimator to ensure compatibility wi
 scikit-learn's cross_validate. It is written using NumPy.
 
 Author: Ole-Christian Galbo Engstrøm
-E-mail: ole.e@di.ku.dk
+E-mail: ocge@foss.dk
 """
 
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Tuple, Union
+from typing import Any, Iterable, Optional, Tuple, Union
 
 import joblib
 import numpy as np
@@ -43,13 +43,17 @@ class PLS(BaseEstimator):
 
     scale_X : bool, default=True
         Whether to scale `X` before fitting by dividing each row with the row of `X`'s
-        column-wise standard deviations. Bessel's correction for the unbiased estimate
-        of the sample standard deviation is used.
+        column-wise standard deviations.
 
     scale_Y : bool, default=True
-        Whether to scale `Y` before fitting by dividing each row with the row of `X`'s
-        column-wise standard deviations. Bessel's correction for the unbiased estimate
-        of the sample standard deviation is used.
+        Whether to scale `Y` before fitting by dividing each row with the row of `Y`'s
+        column-wise standard deviations.
+
+    ddof : int, default=1
+        The delta degrees of freedom to use when computing the sample standard
+        deviation. A value of 0 corresponds to the biased estimate of the sample
+        standard deviation, while a value of 1 corresponds to Bessel's correction for
+        the sample standard deviation.
 
     copy : bool, default=True
         Whether to copy `X` and `Y` in fit before potentially applying centering and
@@ -81,6 +85,7 @@ class PLS(BaseEstimator):
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
+        ddof: int = 1,
         copy: bool = True,
         dtype: np.floating = np.float64,
     ) -> None:
@@ -89,6 +94,7 @@ class PLS(BaseEstimator):
         self.center_Y = center_Y
         self.scale_X = scale_X
         self.scale_Y = scale_Y
+        self.ddof = ddof
         self.copy = copy
         self.dtype = dtype
         self.eps = np.finfo(dtype).eps
@@ -138,7 +144,7 @@ class PLS(BaseEstimator):
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
-        weights: Union[None, npt.ArrayLike] = None,
+        weights: Optional[npt.ArrayLike] = None,
     ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -205,6 +211,11 @@ class PLS(BaseEstimator):
         -------
         None.
 
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and not all weights are non-negative.
+
         Warns
         -----
         UserWarning.
@@ -224,11 +235,13 @@ class PLS(BaseEstimator):
             weights = np.asarray(weights, dtype=self.dtype)
             weights = np.reshape(weights, (-1, 1))
             flattened_weights = weights.flatten()
+            if not np.all(weights >= 0):
+                raise ValueError("Weights must be non-negative.")
             if self.scale_X or self.scale_Y:
                 num_non_zero_weights = np.asarray(
                     np.count_nonzero(weights), dtype=self.dtype
                 )
-                scale_dof = num_non_zero_weights - 1
+                scale_dof = num_non_zero_weights - self.ddof
                 avg_non_zero_weights = np.sum(weights) / num_non_zero_weights
         else:
             flattened_weights = None
@@ -259,7 +272,11 @@ class PLS(BaseEstimator):
             new_X_mean = 0 if self.center_X else self.X_mean
             if weights is None:
                 self.X_std = X.std(
-                    axis=0, ddof=1, dtype=self.dtype, keepdims=True, mean=new_X_mean
+                    axis=0,
+                    ddof=self.ddof,
+                    dtype=self.dtype,
+                    keepdims=True,
+                    mean=new_X_mean,
                 )
             else:
                 self.X_std = np.sqrt(
@@ -273,7 +290,11 @@ class PLS(BaseEstimator):
             new_Y_mean = 0 if self.center_Y else self.Y_mean
             if weights is None:
                 self.Y_std = Y.std(
-                    axis=0, ddof=1, dtype=self.dtype, keepdims=True, mean=new_Y_mean
+                    axis=0,
+                    ddof=self.ddof,
+                    dtype=self.dtype,
+                    keepdims=True,
+                    mean=new_Y_mean,
                 )
             else:
                 self.Y_std = np.sqrt(
@@ -362,7 +383,7 @@ class PLS(BaseEstimator):
                 T[i] = t.squeeze()
                 tTt = t.T @ t
                 p = (t.T @ X).T / tTt
-            elif self.algorithm == 2:
+            else:
                 rXTX = r.T @ XTX
                 tTt = rXTX @ r
                 p = rXTX.T / tTt
@@ -377,7 +398,7 @@ class PLS(BaseEstimator):
             self.B[i] = self.B[i - 1] + r @ q.T
 
     def predict(
-        self, X: npt.ArrayLike, n_components: Union[None, int] = None
+        self, X: npt.ArrayLike, n_components: Optional[int] = None
     ) -> npt.NDArray[np.floating]:
         """
         Predicts on `X` with `B` using `n_components` components. If `n_components` is
@@ -422,7 +443,7 @@ class PLS(BaseEstimator):
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
-        cv_splits: Iterable[Hashable],
+        folds: Iterable[Hashable],
         metric_function: Union[
             Callable[
                 [
@@ -475,7 +496,7 @@ class PLS(BaseEstimator):
                 ],
             ],
         ] = None,
-        weights: Union[None, npt.ArrayLike] = None,
+        weights: Optional[npt.ArrayLike] = None,
         n_jobs: int = -1,
         verbose: int = 10,
     ) -> dict[str, Any]:
@@ -500,12 +521,12 @@ class PLS(BaseEstimator):
         A : int
             Number of components in the PLS model.
 
-        cv_splits : Iterable of Hashable with N elements
+        folds : Iterable of Hashable with N elements
             An iterable defining cross-validation splits. Each unique value in
-            `cv_splits` corresponds to a different fold.
+            `folds` corresponds to a different fold.
 
         metric_function : Callable receiving arrays `Y_val`, `Y_pred`, and, if
-        `weights` is not None, also, `weights_test`, and returning Any.
+        `weights` is not None, also, `weights_val`, and returning Any.
             Computes a metric based on true values `Y_val` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
 
@@ -523,17 +544,22 @@ class PLS(BaseEstimator):
 
         n_jobs : int, optional default=-1
             Number of parallel jobs to use. A value of -1 will use the minimum of all
-            available cores and the number of unique values in `cv_splits`.
+            available cores and the number of unique values in `folds`.
 
         verbose : int, optional default=10
             Controls verbosity of parallel jobs.
 
         Returns
         -------
-        metrics : dict[str, Any]
-            A dictionary containing evaluation metrics for each metric specified in
-            `metric_names`. The keys are metric names, and the values are lists of
-            metric values for each cross-validation fold.
+        metrics : dict of Hashable to Any
+            A dictionary mapping each unique value in `folds` to the result of
+            evaluating `metric_function` on the validation set corresponding to that
+            value.
+
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and not all weights are non-negative.
 
         Notes
         -----
@@ -547,10 +573,11 @@ class PLS(BaseEstimator):
 
         if weights is not None:
             weights = np.asarray(weights, dtype=self.dtype)
-            weights = np.reshape(weights, (-1, 1))
             weights = weights.squeeze()
+            if np.any(weights < 0):
+                raise ValueError("Weights must be non-negative.")
 
-        folds_dict = self._init_folds_dict(cv_splits)
+        folds_dict = self._init_folds_dict(folds)
         num_splits = len(folds_dict)
         all_indices = np.arange(X.shape[0])
 
@@ -591,29 +618,29 @@ class PLS(BaseEstimator):
         metrics_list = Parallel(n_jobs=n_jobs, verbose=verbose)(
             delayed(worker)(val_indices) for val_indices in folds_dict.values()
         )
-        metrics_dict = dict(zip(folds_dict.keys(), metrics_list))
+        metrics_dict = dict(zip(folds_dict, metrics_list))
         return metrics_dict
 
     def _init_folds_dict(
-        self, cv_splits: Iterable[Hashable]
+        self, folds: Iterable[Hashable]
     ) -> dict[Hashable, npt.NDArray[np.int_]]:
         """
-        Generates a list of validation indices for each fold in `cv_splits`.
+        Generates a list of validation indices for each fold in `folds`.
 
         Parameters
         ----------
-        cv_splits : Iterable of Hashable with N elements
+        folds : Iterable of Hashable with N elements
             An iterable defining cross-validation splits. Each unique value in
-            `cv_splits` corresponds to a different fold.
+            `folds` corresponds to a different fold.
 
         Returns
         -------
         index_dict : dict of Hashable to Array
-            A dictionary mapping each unique value in `cv_splits` to an array of
+            A dictionary mapping each unique value in `folds` to an array of
             validation indices.
         """
         index_dict = {}
-        for i, num in enumerate(cv_splits):
+        for i, num in enumerate(folds):
             try:
                 index_dict[num].append(i)
             except KeyError:
