@@ -478,8 +478,9 @@ class PLS:
             An iterable defining cross-validation splits. Each unique value in
             `folds` corresponds to a different fold.
 
-        metric_function : Callable receiving arrays `Y_val`, `Y_pred`, and, if
-        `weights` is not None, also, `weights_val`, and returning Any.
+        metric_function : Callable receiving arrays `Y_val` (N_val, M), `Y_pred`\
+        (A, N_val, M), and, if `weights` is not None, also, `weights_val` (N_val,),\
+        and returning Any.
             Computes a metric based on true values `Y_val` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
 
