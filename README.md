@@ -19,7 +19,7 @@
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
 
 ## NEW IN 3.0.0: Fast cross-validation for weighted IKPLS.
-The `ikpls` software package now directly depends on the `cvmatrix` software package to implement the fast cross-validation by Engstrøm and Jensen [[7]]. `cvmatrix` extends the fast cross-validation algorithms to correctly handle the weighted cases. The extension includes support for all 16 (12 unique) combinations of weighted centering and weighted scaling for X and Y, increasing neither time nor space complexity.
+The `ikpls` software package now directly depends on the `cvmatrix` software package to implement the fast cross-validation by Engstrøm and Jensen [[7]](#references). `cvmatrix` extends the fast cross-validation algorithms to correctly handle the weighted cases. The extension includes support for all 16 (12 unique) combinations of weighted centering and weighted scaling for X and Y, increasing neither time nor space complexity.
 
 ## NEW IN 2.0.0: Weighted IKPLS
 The `ikpls` software package now also features sample-weighted PLS [[8]](#references). For this, `ikpls` uses the weighted mean [[9]](#references) and standard deviation [[10]](#references) as formulated by National Institute of Science and Technology (NIST).
@@ -161,20 +161,13 @@ Gotchas](https://github.com/google/jax#current-gotchas).
 In [examples](https://github.com/Sm00thix/IKPLS/tree/main/examples), you
 will find:
 
--   [Fit and Predict with
-    NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_numpy.py)
--   [Fit and Predict with
-    JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
--   [Cross-validate with
-    NumPy and scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy_sklearn.py)
--   [Cross-validate with NumPy and fast
-    cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_numpy.py)
--   [Cross-validate with
-    JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_jax.py)
--   [Compute the gradient of a preprocessing convolution filter with
-    respect to the RMSE between the target value and the value predicted
-    by PLS after fitting with
-    JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/gradient_jax.py)
+-   [Fit and Predict with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_numpy.py)
+-   [Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
+-   [Cross-validate with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy.py)
+-   [Cross-validate with NumPy and scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy_sklearn.py)
+-   [Cross-validate with NumPy and fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_numpy.py)
+-   [Cross-validate with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_jax.py)
+-   [Compute the gradient of a preprocessing convolution filter with respect to the RMSE between the target value and the value predicted by PLS after fitting with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/gradient_jax.py)
 -   [Weighted Fit and Predict with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_fit_predict_numpy.py)
 -   [Weighted Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
 -   [Weighted cross-validation with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_numpy.py)
