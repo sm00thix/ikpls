@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     # Shape (M, splits) = (10, number_of_splits).
     # Lowest WMSE for each target for each split.
-    lowest_val_mses = np.asarray(
+    lowest_val_wmses = np.asarray(
         [
             [
                 np_pls_alg_1_fast_cv_results[split][f"lowest_wmse_target_{i}"]
