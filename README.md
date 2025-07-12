@@ -171,6 +171,7 @@ will find:
 -   [Cross-validate with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy.py)
 -   [Cross-validate with NumPy and scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy_sklearn.py)
 -   [Cross-validate with NumPy and fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_numpy.py)
+-   [Cross-validate with NumPy and weighted fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_weighted_cross_val_numpy.py)
 -   [Cross-validate with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_jax.py)
 -   [Compute the gradient of a preprocessing convolution filter with respect to the RMSE between the target value and the value predicted by PLS after fitting with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/gradient_jax.py)
 -   [Weighted Fit and Predict with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_fit_predict_numpy.py)

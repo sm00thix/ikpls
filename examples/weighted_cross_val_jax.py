@@ -60,9 +60,9 @@ def wmse_per_component_and_best_components(
     metric function.
     """
     print("Metric function will be JIT compiled...")
-    # Y_true has shape (N, M), Y_pred has shape (A, N, M).
-    e = Y_true - Y_pred  # Shape (A, N, M)
-    se = e**2  # Shape (A, N, M)
+    # Y_true has shape (N_val, M), Y_pred has shape (A, N_val, M).
+    e = Y_true - Y_pred  # Shape (A, N_val, M)
+    se = e**2  # Shape (A, N_val, M)
     wmse = jnp.average(se, axis=-2, weights=val_weights)  # Shape (A, M)
     best_num_components = jnp.argmin(wmse, axis=0) + 1  # Shape (M,)
     return (wmse, best_num_components)

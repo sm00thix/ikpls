@@ -40,10 +40,10 @@ def mse_for_each_target(estimator, X: np.ndarray, Y_true: np.ndarray, **kwargs) 
     Compute the mean squared error for each target and the number of components that
     achieves the lowest MSE for each target.
     """
-    # Y_true has shape (N, M)
-    Y_pred = estimator.predict(X, **kwargs)  # Shape (A, N, M)
-    e = Y_true - Y_pred  # Shape (A, N, M)
-    se = e**2  # Shape (A, N, M)
+    # Y_true has shape (N_val, M)
+    Y_pred = estimator.predict(X, **kwargs)  # Shape (A, N_val, M)
+    e = Y_true - Y_pred  # Shape (A, N_val, M)
+    se = e**2  # Shape (A, N_val, M)
     mse = np.mean(se, axis=-2)  # Compute the mean over samples. Shape (A, M).
 
     # The number of components that minimizes the MSE for each target. Shape (M,).

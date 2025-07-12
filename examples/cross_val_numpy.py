@@ -42,10 +42,10 @@ def mse_for_each_target(
     We can return anything we want. Here, we compute the mean squared error for each
     target and the number of components that achieves the lowest MSE for each target.
     """
-    # Y_true has shape (N, M)
-    # Y_pred has shape (A, N, M)
-    e = Y_true - Y_pred  # Shape (A, N, M)
-    se = e**2  # Shape (A, N, M)
+    # Y_true has shape (N_val, M)
+    # Y_pred has shape (A, N_val, M)
+    e = Y_true - Y_pred  # Shape (A, N_val, M)
+    se = e**2  # Shape (A, N_val, M)
 
     # Compute the weighted mean over samples. Shape (A, M).
     mse = np.mean(se, axis=-2)

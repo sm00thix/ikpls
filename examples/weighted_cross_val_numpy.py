@@ -1,7 +1,7 @@
 """
 This file contains an example implementation of weighted cross-validation using IKPLS.
-It demonstrates how to perform weighted cross-validation with column-wise centering and
-scaling. It also demonstrates metric computation and evaluation.
+It demonstrates how to perform weighted cross-validation with weighted column-wise
+centering and scaling. It also demonstrates weighted metric computation and evaluation.
 
 The code includes the following functions:
 - `wmse_for_each_target`: A function to compute the weigthed mean squared error for each
@@ -43,10 +43,10 @@ def wmse_for_each_target(
     We can return anything we want. Here, we compute the mean squared error for each
     target and the number of components that achieves the lowest MSE for each target.
     """
-    # Y_true has shape (N, M)
-    # Y_pred has shape (A, N, M)
-    e = Y_true - Y_pred  # Shape (A, N, M)
-    se = e**2  # Shape (A, N, M)
+    # Y_true has shape (N_val, M)
+    # Y_pred has shape (A, N_val, M)
+    e = Y_true - Y_pred  # Shape (A, N_val, M)
+    se = e**2  # Shape (A, N_val, M)
 
     # Compute the weighted mean over samples. Shape (A, M).
     wmse = np.average(se, axis=-2, weights=val_weights)
@@ -61,12 +61,12 @@ def wmse_for_each_target(
     num_components = row_idxs + 1
 
     # List of names for the lowest MSE values.
-    wmse_names = [f"lowest_mse_target_{i}" for i in range(lowest_wmses.shape[0])]
+    wmse_names = [f"lowest_wmse_target_{i}" for i in range(lowest_wmses.shape[0])]
 
     # List of names for the number of components that
     # achieves the lowest MSE for each target.
     num_components_names = [
-        f"num_components_lowest_mse_target_{i}" for i in range(lowest_wmses.shape[0])
+        f"num_components_lowest_wmse_target_{i}" for i in range(lowest_wmses.shape[0])
     ]
     all_names = wmse_names + num_components_names  # List of all names.
     all_values = np.concatenate((lowest_wmses, num_components))  # Array of all values.
@@ -123,11 +123,11 @@ if __name__ == "__main__":
     unique_splits = np.unique(splits)
 
     # Shape (M, splits) = (10, number_of_splits).
-    # Lowest MSE for each target for each split.
+    # Lowest WMSE for each target for each split.
     lowest_val_wmses = np.asarray(
         [
             [
-                np_pls_alg_1_cv_wmses[split][f"lowest_mse_target_{i}"]
+                np_pls_alg_1_cv_wmses[split][f"lowest_wmse_target_{i}"]
                 for split in unique_splits
             ]
             for i in range(M)
@@ -135,11 +135,11 @@ if __name__ == "__main__":
     )
 
     # Shape (M, splits) = (10, number_of_splits).
-    # Number of components that achieves the lowest MSE for each target for each split.
+    # Number of components that achieves the lowest WMSE for each target for each split.
     best_num_components = np.asarray(
         [
             [
-                np_pls_alg_1_cv_wmses[split][f"num_components_lowest_mse_target_{i}"]
+                np_pls_alg_1_cv_wmses[split][f"num_components_lowest_wmse_target_{i}"]
                 for split in unique_splits
             ]
             for i in range(M)
