@@ -20,6 +20,7 @@ import numpy.linalg as la
 import numpy.typing as npt
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator
+from sklearn.exceptions import NotFittedError
 
 
 class PLS(BaseEstimator):
@@ -55,12 +56,6 @@ class PLS(BaseEstimator):
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    copy : bool, default=True
-        Whether to copy `X` and `Y` in fit before potentially applying centering and
-        scaling. If True, then the data is copied before fitting. If False, and `dtype`
-        matches the type of `X` and `Y`, then centering and scaling is done inplace,
-        modifying both arrays.
-
     dtype : numpy.float, default=numpy.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
         precision than float64 will yield significantly worse results when using an
@@ -86,7 +81,6 @@ class PLS(BaseEstimator):
         scale_X: bool = True,
         scale_Y: bool = True,
         ddof: int = 1,
-        copy: bool = True,
         dtype: np.floating = np.float64,
     ) -> None:
         self.algorithm = algorithm
@@ -95,7 +89,6 @@ class PLS(BaseEstimator):
         self.scale_X = scale_X
         self.scale_Y = scale_Y
         self.ddof = ddof
-        self.copy = copy
         self.dtype = dtype
         self.eps = np.finfo(dtype).eps
         self.name = f"Improved Kernel PLS Algorithm #{algorithm}"
@@ -112,12 +105,14 @@ class PLS(BaseEstimator):
         self.P = None
         self.Q = None
         self.R = None
+        self.R_Y = None
         self.T = None
         self.X_mean = None
         self.Y_mean = None
         self.X_std = None
         self.Y_std = None
         self.max_stable_components = None
+        self.fitted_ = False
 
     def _weight_warning(self, i: int) -> None:
         """
@@ -139,12 +134,33 @@ class PLS(BaseEstimator):
         )
         self.max_stable_components = i
 
+    def _convert_input_to_array(self, arr: npt.ArrayLike) -> npt.NDArray[np.floating]:
+        """
+        Converts input array to numpy array of type self.dtype. Inserts a second axis
+        if the input array is 1-dimensional.
+
+        Parameters
+        ----------
+        arr : ArrayLike
+            Input array.
+
+        Returns
+        -------
+        array_converted : Array of shape of input array
+            Converted input array.
+        """
+        arr = np.asarray(arr, dtype=self.dtype)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        return arr
+
     def fit(
         self,
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
         weights: Optional[npt.ArrayLike] = None,
+        copy: bool = True,
     ) -> None:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -163,6 +179,12 @@ class PLS(BaseEstimator):
         weights : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
+        
+        copy : bool, default=True
+            Whether to copy `X` and `Y` in before potentially applying centering and
+            scaling. If True, then the data is copied before fitting. If False, and `dtype`
+            matches the type of `X` and `Y`, then centering and scaling is done inplace,
+            modifying both arrays.
 
         Attributes
         ----------
@@ -187,6 +209,11 @@ class PLS(BaseEstimator):
 
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
+
+        R_Y : None
+            List of PLS weights matrix to compute scores U directly from original Y. This is
+            assigned in `transform` when transforming Y for the first time after a call to
+            `fit`.
 
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
@@ -221,12 +248,15 @@ class PLS(BaseEstimator):
         UserWarning.
             If at any point during iteration over the number of components `A`, the
             residual goes below machine precision for np.float64.
-        """
-        X = np.asarray(X, dtype=self.dtype)
-        Y = np.asarray(Y, dtype=self.dtype)
 
-        if Y.ndim == 1:
-            Y = Y.reshape(-1, 1)
+        See Also
+        --------
+        transform : Transforms `X` and `Y` to their respective scores.
+        fit_transform : Fits the model and returns the scores of `X` and `Y`.
+        """
+        self.fitted_ = True
+        X = self._convert_input_to_array(X)
+        Y = self._convert_input_to_array(Y)
 
         N, K = X.shape
         M = Y.shape[1]
@@ -246,10 +276,10 @@ class PLS(BaseEstimator):
         else:
             flattened_weights = None
 
-        if (self.center_X or self.scale_X) and self.copy:
+        if (self.center_X or self.scale_X) and copy:
             X = X.copy()
 
-        if (self.center_Y or self.scale_Y) and self.copy:
+        if (self.center_Y or self.scale_Y) and copy:
             Y = Y.copy()
 
         if self.center_X or self.scale_X:
@@ -313,6 +343,7 @@ class PLS(BaseEstimator):
         self.P = P.T
         self.Q = Q.T
         self.R = R.T
+        self.R_Y = None
         if self.algorithm == 1:
             T = np.zeros(shape=(A, N), dtype=self.dtype)
             self.T = T.T
@@ -356,7 +387,7 @@ class PLS(BaseEstimator):
                     eig_vals, eig_vecs = la.eigh(XTYTXTY)
                     q = eig_vecs[:, -1:]
                     w = XTY @ q
-                    norm = la.norm(w)
+                    norm = la.norm(w, ord=2)
                     if np.isclose(norm, 0, atol=self.eps, rtol=0):
                         self._weight_warning(i)
                         break
@@ -387,7 +418,12 @@ class PLS(BaseEstimator):
                 rXTX = r.T @ XTX
                 tTt = rXTX @ r
                 p = rXTX.T / tTt
-            q = (r.T @ XTY).T / tTt
+            if M == 1:
+                q = norm / tTt
+            elif 1 < M < K:
+                q = q * np.sqrt(eig_vals[-1]) / tTt
+            else:
+                q = (r.T @ XTY).T / tTt
             P[i] = p.squeeze()
             Q[i] = q.squeeze()
 
@@ -420,8 +456,15 @@ class PLS(BaseEstimator):
             predictions for that specific number of components is used. If
             `n_components` is None, returns a prediction for each number of components
             up to `A`.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has not been fitted before calling `predict()`.
         """
-        X = np.asarray(X, dtype=self.dtype)
+        if not self.fitted_:
+            raise NotFittedError("This model is not fitted yet, call 'fit' with approriate arguments before 'predict'.")
+        X = self._convert_input_to_array(X)
         if self.center_X:
             X = X - self.X_mean
         if self.scale_X:
@@ -437,6 +480,224 @@ class PLS(BaseEstimator):
         if self.center_Y:
             Y_pred = Y_pred + self.Y_mean
         return Y_pred
+
+    def _compute_R_Y(self, n_components) -> None:
+        """
+        Computes the PLS weights matrix to compute scores U directly from original Y.
+        This is assigned in `transform` when transforming Y for the first time after a
+        call to `fit`.
+
+        Returns
+        -------
+        None.
+        """
+        if self.R_Y is None:
+            self.R_Y = {}
+        if self.R_Y.get(n_components) is None:
+            self.R_Y[n_components] = la.pinv(self.Q[:, :n_components].T)
+
+    def transform(
+        self,
+        X: Optional[npt.ArrayLike] = None,
+        Y: Optional[npt.ArrayLike] = None,
+        n_components: Optional[int] = None,
+        copy: bool = True,
+    ) -> Union[npt.ArrayLike, Tuple[npt.ArrayLike, npt.ArrayLike], None]:
+        """
+        Transforms `X` and `Y` to their respective scores using `n_components` components.
+        If `n_components` is None, then scores for all components up to `A` are returned.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K) or None, optional, default=None
+            Predictor variables.
+        Y : Array of shape (N, M) or None, optional, default=None
+            Response variables.
+        n_components : int or None, optional, default=None.
+            Number of components in the PLS model. If None, then scores for all
+            components up to `A` are returned.
+
+        copy : bool, default=True
+            Whether to copy `X` and `Y` before potentially applying centering and
+            scaling. If True, then the data is copied beforehand. If False, and `dtype`
+            matches the type of `X` and `Y`, then centering and scaling is done inplace,
+            modifying both arrays.
+
+        Attributes
+        ----------
+        R_Y : Dictionary of arrays of sizes (M, n_components)
+            PLS weights matrix to compute scores U directly from original Y. Only
+            assigned when transforming Y for the first time after a call to .fit().
+            The weights for n_components are stored in self.R_Y[n_components].
+
+        Returns
+        -------
+        T : Array of shape (N, n_components) or (N, A) or None
+            X scores of `X`. If `n_components` is an int, then the scores up to
+            `n_components` is used. If `n_components` is None, returns scores for all
+            components up to `A`.
+        U : Array of shape (N, n_components) or (N, A) or None
+            Y scores of `Y`. If `n_components` is an int, then the scores up to
+            `n_components` is used. If `n_components` is None, returns scores for all
+            components up to `A`.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has not been fitted before calling `transform()`.
+
+        See Also
+        --------
+        fit_transform : Fits the model and returns the scores of `X` and `Y`.
+        inverse_transform : Reconstructs `X` and `Y` from their respective scores.
+
+        Notes
+        -----
+        If multiple calls to `transform` are made with Y provided and a previously seen
+        value of `n_components`, then self.R_Y[n_components] is only computed once and
+        stored for future use.
+
+        Any centering and scaling of `X`and `Y` is carried out before computation of
+        the scores and is undone afterwards.
+        """
+        if not self.fitted_:
+            raise NotFittedError("This model is not fitted yet, call 'fit' with approriate arguments before 'transform'.")
+        if n_components is None:
+            n_components = self.A
+        if X is not None:
+            X = self._convert_input_to_array(X)
+            if (self.center_X or self.scale_X) and copy:
+                X = X.copy()
+            if self.center_X:
+                X -= self.X_mean
+            if self.scale_X:
+                X /= self.X_std
+            T = X @ self.R[:, :n_components]
+        if Y is not None:
+            Y = self._convert_input_to_array(Y)
+            if (self.center_Y or self.scale_Y) and copy:
+                Y = Y.copy()
+            if self.center_Y:
+                Y -= self.Y_mean
+            if self.scale_Y:
+                Y /= self.Y_std
+            self._compute_R_Y(n_components=n_components)
+            U = Y @ self.R_Y[n_components]
+        if X is not None and Y is not None:
+            return T, U
+        if X is not None:
+            return T
+        if Y is not None:
+            return U
+        return None
+
+    def fit_transform(
+        self,
+        X: npt.ArrayLike,
+        Y: npt.ArrayLike,
+        A: int,
+        weights: Optional[npt.ArrayLike] = None,
+    ) -> Tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """
+        Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components and
+        returns T and U which are the scores of `X` and `Y`, respectively.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K)
+            Predictor variables.
+
+        Y : Array of shape (N, M) or (N,)
+            Response variables.
+
+        A : int
+            Number of components in the PLS model.
+
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        Returns
+        -------
+        T : Array of shape (N, A)
+            PLS scores matrix of X.
+
+        U : Array of shape (N, A)
+            PLS scores matrix of Y.
+
+        See Also
+        --------
+        transform : Transforms `X` and `Y` to their respective scores.
+        inverse_transform : Reconstructs `X` and `Y` from their respective scores.
+        """
+        self.fit(X=X, Y=Y, A=A, weights=weights)
+        if self.algorithm == 1:
+            return np.copy(self.T), self.transform(Y=Y)
+        return self.transform(X=X, Y=Y)
+
+    def inverse_transform(
+        self,
+        X_scores: Optional[npt.ArrayLike] = None,
+        Y_scores: Optional[npt.ArrayLike] = None,
+    ) -> Union[npt.ArrayLike, Tuple[npt.ArrayLike, npt.ArrayLike], None]:
+        """
+        Reconstructs `X` and `Y` from their respective scores.
+
+        Parameters
+        ----------
+        X_scores : Array of shape (N, n_components) or (N, A) or None, optional, default=None
+            Scores of predictor variables.
+        Y_scores : Array of shape (N, n_components) or (N, A) or None, optional, default=None
+            Scores of response variables.
+
+        Returns
+        -------
+        X_reconstructed : Array of shape (N, K) or None
+            If `X_scores` is not None, returns the reconstructed `X`.
+        Y_reconstructed : Array of shape (N, M) or None
+            If `Y_scores` is not None, returns the reconstructed `Y`.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has not been fitted before calling `inverse_transform()`.
+
+        See Also
+        --------
+        transform : Transforms `X` and `Y` to their respective scores.
+        fit_transform : Fits the model and returns the scores of `X` and `Y`.
+        """
+        if not self.fitted_:
+            raise NotFittedError("This model is not fitted yet, call 'fit' with approriate arguments before 'inverse_transform'.")
+        X_reconstructed = None
+        Y_reconstructed = None
+
+        if X_scores is not None:
+            X_scores = self._convert_input_to_array(X_scores)
+            X_components = X_scores.shape[1]
+            X_reconstructed = X_scores @ self.P[:, :X_components].T
+            if self.scale_X:
+                X_reconstructed = X_reconstructed * self.X_std
+            if self.center_X:
+                X_reconstructed = X_reconstructed + self.X_mean
+
+        if Y_scores is not None:
+            Y_scores = self._convert_input_to_array(Y_scores)
+            Y_components = Y_scores.shape[1]
+            Y_reconstructed = Y_scores @ self.Q[:, :Y_components].T
+            if self.scale_Y:
+                Y_reconstructed = Y_reconstructed * self.Y_std
+            if self.center_Y:
+                Y_reconstructed = Y_reconstructed + self.Y_mean
+
+        if X_reconstructed is not None and Y_reconstructed is not None:
+            return X_reconstructed, Y_reconstructed
+        elif X_reconstructed is not None:
+            return X_reconstructed
+        elif Y_reconstructed is not None:
+            return Y_reconstructed
+        else:
+            return None
 
     def cross_validate(
         self,

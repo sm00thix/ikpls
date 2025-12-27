@@ -20,13 +20,6 @@
 
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
 
-## NEW IN 3.0.0: Fast cross-validation for weighted IKPLS.
-The `ikpls` software package now directly depends on the `cvmatrix` software package [[11]](#references) to implement the fast cross-validation by Engstrøm and Jensen [[7]](#references). `cvmatrix` extends the fast cross-validation algorithms to correctly handle the weighted cases. The extension includes support for all 16 (12 unique) combinations of weighted centering and weighted scaling for X and Y, increasing neither time nor space complexity.
-
-## NEW IN 2.0.0: Weighted IKPLS
-The `ikpls` software package now also features sample-weighted PLS [[8]](#references). For this, `ikpls` uses the weighted mean [[9]](#references) and standard deviation [[10]](#references) as formulated by National Institute of Science and Technology (NIST).
-Both NumPy and JAX implementations allow for weighted cross-validation with their respective `cross_validate` methods.
-
 ## Citation
 If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533). If you use the fast cross-validation algorithm implemented in `ikpls.fast_cross_validation.numpy_ikpls`, please also cite [this Journal of Chemometrics article](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008).
 
@@ -40,7 +33,8 @@ implementations subclass scikit-learn's BaseEstimator, they can be used with sci
 [cross_validate](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_validate.html).
 - Use our JAX [[6]](#references) implementations on CPUs or **leverage powerful GPUs and TPUs for PLS modelling**.
   Our JAX implementations are **end-to-end differentaible** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
-- Use our combination of IKPLS with Engstrøm's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
+- Use our combination of IKPLS with Engstrøm's and Jensen's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
+- Use any of the above in combination with **sample-weighted PLS** [[8]](#references).
 
 The documentation is available at
 <https://ikpls.readthedocs.io/en/latest/>; examples can be found at
@@ -55,14 +49,14 @@ algorithm benefit both IKPLS Algorithms and especially Algorithm #2. The fast
 cross-validation algorithm is mathematically equivalent to the
 classical cross-validation algorithm. Still, it is much quicker.
 The fast cross-validation algorithm **correctly handles (column-wise)
-centering and scaling** of the X and Y input matrices using training set means and
+centering and scaling** of the $\mathbf{X}$ and $\mathbf{Y}$ input matrices using training set means and
 standard deviations to avoid data leakage from the validation set. This centering
-and scaling can be enabled or disabled independently from eachother and for X and Y 
+and scaling can be enabled or disabled independently from eachother and for $\mathbf{X}$ and $\mathbf{Y}$ 
 by setting the parameters `center_X`, `center_Y`, `scale_X`, and `scale_Y`, respectively.
 In addition to correctly handling (column-wise) centering and scaling,
 the fast cross-validation algorithm **correctly handles row-wise preprocessing**
 that operates independently on each sample such as (row-wise) centering and scaling
-of the X and Y input matrices, convolution, or other preprocessing. Row-wise
+of the $\mathbf{X}$ and $\mathbf{Y}$ input matrices, convolution, or other preprocessing. Row-wise
 preprocessing can safely be applied before passing the data to the fast
 cross-validation algorithm.
 
@@ -181,6 +175,10 @@ will find:
 -   [Weighted cross-validation with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_numpy.py)
 -   [Weighted cross-validation with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_jax.py)
 
+## Changelog
+   
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+
 ## Contribute
 
 To contribute, please read the [Contribution
@@ -196,9 +194,6 @@ Guidelines](https://github.com/Sm00thix/IKPLS/blob/main/CONTRIBUTING.md).
 6. [JAX](https://jax.readthedocs.io/en/latest/)
 7. [Engstrøm, O.-C. G. and Jensen, M. H. (2025). Fast Partition-Based Cross-Validation With Centering and Scaling for $\mathbf{X}^\mathbf{T}\mathbf{X}$ and $\mathbf{X}^\mathbf{T}\mathbf{Y}$](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008)
 8. [Becker and Ismail (2016). Accounting for sampling weights in PLS path modeling: Simulations and empirical examples. *European Management Journal*, 34(6), 606-617.](https://doi.org/10.1016/j.emj.2016.06.009)
-9. [Weighted mean. *National Institute of Standards and Technology*.](https://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weigmean.pdf)
-10. [Weighted standard deviation. *National Institute of Standards and Technology*.](https://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weightsd.pdf)
-11. [CVMatrix. Fast computation of possibly weighted and possibly centered/scaled training set kernel matrices in a cross-validation setting.](https://github.com/sm00thix/cvmatrix)
 
 
 ## Funding

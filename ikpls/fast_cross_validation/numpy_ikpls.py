@@ -100,14 +100,14 @@ class PLS:
         scale_X: bool = True,
         scale_Y: bool = True,
         ddof: int = 1,
-        dtype: np.floating = np.float64,
         copy: bool = True,
+        dtype: np.floating = np.float64,
     ) -> None:
+        self.algorithm = algorithm
         self.center_X = center_X
         self.center_Y = center_Y
         self.scale_X = scale_X
         self.scale_Y = scale_Y
-        self.algorithm = algorithm
         self.ddof = ddof
         self.dtype = dtype
         self.copy = copy
@@ -301,7 +301,12 @@ class PLS:
                 rtraining_XTX = r.T @ training_XTX
                 tTt = rtraining_XTX @ r
                 p = rtraining_XTX.T / tTt
-            q = (r.T @ training_XTY).T / tTt
+            if self.M == 1:
+                q = norm / tTt
+            elif 1 < self.M < self.K:
+                q = q * np.sqrt(eig_vals[-1]) / tTt
+            else:
+                q = (r.T @ training_XTY).T / tTt
             PT[i] = p.squeeze()
             QT[i] = q.squeeze()
 
