@@ -5460,19 +5460,19 @@ class TestClass:
         for center_X, center_Y, scale_X, scale_Y in center_scale_combinations:
             if fit_transform:
                 (
-                np_pls_alg_1,
-                np_pls_alg_2,
-                jax_pls_alg_1,
-                jax_pls_alg_2,
-                diff_jax_pls_alg_1,
-                diff_jax_pls_alg_2,
-            ) = self.get_models(
-                center_X=center_X,
-                center_Y=center_Y,
-                scale_X=scale_X,
-                scale_Y=scale_Y,
-                fast_cv=False,
-            )
+                    np_pls_alg_1,
+                    np_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
+                ) = self.get_models(
+                    center_X=center_X,
+                    center_Y=center_Y,
+                    scale_X=scale_X,
+                    scale_Y=scale_Y,
+                    fast_cv=False,
+                )
             else:
                 (
                     np_pls_alg_1,
@@ -5496,14 +5496,16 @@ class TestClass:
             # for nc in range(1, n_components + 1):
             for nc in range(n_components, n_components + 1):
                 if fit_transform:
-                    np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = np_pls_alg_1.fit_transform(
-                        X=X, Y=Y, A=nc
+                    np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
+                        np_pls_alg_1.fit_transform(X=X, Y=Y, A=nc)
                     )
                 else:
-                    np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = np_pls_alg_1.transform(X=X, Y=Y, n_components=nc)
+                    np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
+                        np_pls_alg_1.transform(X=X, Y=Y, n_components=nc)
+                    )
 
                 if use_sk:
-                    sk_pls = SkPLS(n_components = nc, scale=scale_X)
+                    sk_pls = SkPLS(n_components=nc, scale=scale_X)
                     sk_transformed_X, sk_transformed_Y = sk_pls.fit_transform(X, Y)
                     assert_allclose(
                         np.abs(np_pls_alg_1_transformed_X),
@@ -5524,7 +5526,6 @@ class TestClass:
                         f", n_components: {nc}",
                     )
 
-
                 for model in [
                     np_pls_alg_2,
                     # jax_pls_alg_1,
@@ -5533,9 +5534,13 @@ class TestClass:
                     # diff_jax_pls_alg_2,
                 ]:
                     if fit_transform:
-                        transformed_X, transformed_Y = model.fit_transform(X=X, Y=Y, A=nc)
+                        transformed_X, transformed_Y = model.fit_transform(
+                            X=X, Y=Y, A=nc
+                        )
                     else:
-                        transformed_X, transformed_Y = model.transform(X=X, Y=Y, n_components=nc)
+                        transformed_X, transformed_Y = model.transform(
+                            X=X, Y=Y, n_components=nc
+                        )
 
                     err_msg = (
                         f"Model {model}, Center_X: {center_X}, Center_Y: "
@@ -5704,16 +5709,22 @@ class TestClass:
             use_sk = center_X and center_Y and (scale_X == scale_Y)
 
             for nc in range(1, n_components + 1):
-                np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = np_pls_alg_1.transform(X=X, Y=Y, n_components=nc)
-                np_pls_alg_1_inverse_transformed_X, np_pls_alg_1_inverse_transformed_Y = np_pls_alg_1.inverse_transform(
-                    X_scores=np_pls_alg_1_transformed_X, Y_scores=np_pls_alg_1_transformed_Y
+                np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
+                    np_pls_alg_1.transform(X=X, Y=Y, n_components=nc)
+                )
+                (
+                    np_pls_alg_1_inverse_transformed_X,
+                    np_pls_alg_1_inverse_transformed_Y,
+                ) = np_pls_alg_1.inverse_transform(
+                    X_scores=np_pls_alg_1_transformed_X,
+                    Y_scores=np_pls_alg_1_transformed_Y,
                 )
 
                 if use_sk:
-                    sk_pls = SkPLS(n_components = nc, scale=scale_X)
+                    sk_pls = SkPLS(n_components=nc, scale=scale_X)
                     sk_transformed_X, sk_transformed_Y = sk_pls.fit_transform(X, Y)
-                    sk_inverse_transformed_X, sk_inverse_transformed_Y = sk_pls.inverse_transform(
-                        X=sk_transformed_X, y=sk_transformed_Y
+                    sk_inverse_transformed_X, sk_inverse_transformed_Y = (
+                        sk_pls.inverse_transform(X=sk_transformed_X, y=sk_transformed_Y)
                     )
                     assert_allclose(
                         np_pls_alg_1_inverse_transformed_X,
@@ -5741,9 +5752,13 @@ class TestClass:
                     # diff_jax_pls_alg_1,
                     # diff_jax_pls_alg_2,
                 ]:
-                    transformed_X, transformed_Y = model.transform(X=X, Y=Y, n_components=nc)
-                    inverse_transformed_X, inverse_transformed_Y = model.inverse_transform(
-                        X_scores=transformed_X, Y_scores=transformed_Y
+                    transformed_X, transformed_Y = model.transform(
+                        X=X, Y=Y, n_components=nc
+                    )
+                    inverse_transformed_X, inverse_transformed_Y = (
+                        model.inverse_transform(
+                            X_scores=transformed_X, Y_scores=transformed_Y
+                        )
                     )
 
                     err_msg = (
@@ -5906,11 +5921,19 @@ class TestClass:
                 return_sk_pls=False,
             )
 
-            for X_components, Y_components in [(1,2), (2,1)]:
-                np_pls_alg_1_transformed_X = np_pls_alg_1.transform(X=X, n_components=X_components)
-                np_pls_alg_1_transformed_Y = np_pls_alg_1.transform(Y=Y, n_components=Y_components)
-                np_pls_alg_1_inverse_transformed_X, np_pls_alg_1_inverse_transformed_Y = np_pls_alg_1.inverse_transform(
-                    X_scores=np_pls_alg_1_transformed_X, Y_scores=np_pls_alg_1_transformed_Y
+            for X_components, Y_components in [(1, 2), (2, 1)]:
+                np_pls_alg_1_transformed_X = np_pls_alg_1.transform(
+                    X=X, n_components=X_components
+                )
+                np_pls_alg_1_transformed_Y = np_pls_alg_1.transform(
+                    Y=Y, n_components=Y_components
+                )
+                (
+                    np_pls_alg_1_inverse_transformed_X,
+                    np_pls_alg_1_inverse_transformed_Y,
+                ) = np_pls_alg_1.inverse_transform(
+                    X_scores=np_pls_alg_1_transformed_X,
+                    Y_scores=np_pls_alg_1_transformed_Y,
                 )
                 for model in [
                     np_pls_alg_2,
@@ -5921,8 +5944,10 @@ class TestClass:
                 ]:
                     transformed_X = model.transform(X=X, n_components=X_components)
                     transformed_Y = model.transform(Y=Y, n_components=Y_components)
-                    inverse_transformed_X, inverse_transformed_Y = model.inverse_transform(
-                        X_scores=transformed_X, Y_scores=transformed_Y
+                    inverse_transformed_X, inverse_transformed_Y = (
+                        model.inverse_transform(
+                            X_scores=transformed_X, Y_scores=transformed_Y
+                        )
                     )
 
                     err_msg = (
@@ -6070,8 +6095,9 @@ class TestClass:
             X, Y, atol=1e-6, rtol=1e-6
         )
 
-    
-    def check_transform_inverse_transform_refit_transform_inverse_transform(self, X, Y, atol, rtol):
+    def check_transform_inverse_transform_refit_transform_inverse_transform(
+        self, X, Y, atol, rtol
+    ):
         center_X = center_Y = scale_X = scale_Y = True
         n_components = min(X.shape[0], X.shape[1])
         (
@@ -6088,12 +6114,15 @@ class TestClass:
             scale_Y=scale_Y,
             fast_cv=False,
         )
-        for X_to_use, Y_to_use, n_components_to_use in [(X, Y, n_components), (X[::2, :], Y[::2, :], n_components // 2)]:
+        for X_to_use, Y_to_use, n_components_to_use in [
+            (X, Y, n_components),
+            (X[::2, :], Y[::2, :], n_components // 2),
+        ]:
             sk_pls = SkPLS(n_components=n_components_to_use, scale=scale_X)
             sk_pls.fit(X_to_use, Y_to_use)
             sk_transformed_X, sk_transformed_Y = sk_pls.transform(X_to_use, Y_to_use)
-            sk_inverse_transformed_X, sk_inverse_transformed_Y = sk_pls.inverse_transform(
-                X=sk_transformed_X, y=sk_transformed_Y
+            sk_inverse_transformed_X, sk_inverse_transformed_Y = (
+                sk_pls.inverse_transform(X=sk_transformed_X, y=sk_transformed_Y)
             )
             for model in [
                 np_pls_alg_1,
@@ -6103,14 +6132,14 @@ class TestClass:
                 # diff_jax_pls_alg_1,
                 # diff_jax_pls_alg_2,
             ]:
-                transformed_X, transformed_Y = model.fit_transform(X=X_to_use, Y=Y_to_use, A=n_components_to_use)
+                transformed_X, transformed_Y = model.fit_transform(
+                    X=X_to_use, Y=Y_to_use, A=n_components_to_use
+                )
                 inverse_transformed_X, inverse_transformed_Y = model.inverse_transform(
                     X_scores=transformed_X, Y_scores=transformed_Y
                 )
 
-                err_msg = (
-                    f"Model {model}, fit with n_components: {n_components_to_use}"
-                )
+                err_msg = f"Model {model}, fit with n_components: {n_components_to_use}"
 
                 assert_allclose(
                     np.abs(transformed_X),

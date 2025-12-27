@@ -179,7 +179,7 @@ class PLS(BaseEstimator):
         weights : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
-        
+
         copy : bool, default=True
             Whether to copy `X` and `Y` in before potentially applying centering and
             scaling. If True, then the data is copied before fitting. If False, and `dtype`
@@ -381,25 +381,24 @@ class PLS(BaseEstimator):
                     self._weight_warning(i)
                     break
                 w = XTY / norm
+            elif M < K:
+                XTYTXTY = XTY.T @ XTY
+                eig_vals, eig_vecs = la.eigh(XTYTXTY)
+                q = eig_vecs[:, -1:]
+                w = XTY @ q
+                norm = la.norm(w, ord=2)
+                if np.isclose(norm, 0, atol=self.eps, rtol=0):
+                    self._weight_warning(i)
+                    break
+                w = w / norm
             else:
-                if M < K:
-                    XTYTXTY = XTY.T @ XTY
-                    eig_vals, eig_vecs = la.eigh(XTYTXTY)
-                    q = eig_vecs[:, -1:]
-                    w = XTY @ q
-                    norm = la.norm(w, ord=2)
-                    if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                        self._weight_warning(i)
-                        break
-                    w = w / norm
-                else:
-                    XTYYTX = XTY @ XTY.T
-                    eig_vals, eig_vecs = la.eigh(XTYYTX)
-                    norm = eig_vals[-1]
-                    if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                        self._weight_warning(i)
-                        break
-                    w = eig_vecs[:, -1:]
+                XTYYTX = XTY @ XTY.T
+                eig_vals, eig_vecs = la.eigh(XTYYTX)
+                norm = eig_vals[-1]
+                if np.isclose(norm, 0, atol=self.eps, rtol=0):
+                    self._weight_warning(i)
+                    break
+                w = eig_vecs[:, -1:]
             W[i] = w.squeeze()
 
             # Step 3
@@ -420,7 +419,7 @@ class PLS(BaseEstimator):
                 p = rXTX.T / tTt
             if M == 1:
                 q = norm / tTt
-            elif 1 < M < K:
+            elif M < K:
                 q = q * np.sqrt(eig_vals[-1]) / tTt
             else:
                 q = (r.T @ XTY).T / tTt
@@ -463,7 +462,9 @@ class PLS(BaseEstimator):
             If the model has not been fitted before calling `predict()`.
         """
         if not self.fitted_:
-            raise NotFittedError("This model is not fitted yet, call 'fit' with approriate arguments before 'predict'.")
+            raise NotFittedError(
+                "This model is not fitted yet, call 'fit' with approriate arguments before 'predict'."
+            )
         X = self._convert_input_to_array(X)
         if self.center_X:
             X = X - self.X_mean
@@ -561,7 +562,9 @@ class PLS(BaseEstimator):
         the scores and is undone afterwards.
         """
         if not self.fitted_:
-            raise NotFittedError("This model is not fitted yet, call 'fit' with approriate arguments before 'transform'.")
+            raise NotFittedError(
+                "This model is not fitted yet, call 'fit' with approriate arguments before 'transform'."
+            )
         if n_components is None:
             n_components = self.A
         if X is not None:
@@ -668,7 +671,9 @@ class PLS(BaseEstimator):
         fit_transform : Fits the model and returns the scores of `X` and `Y`.
         """
         if not self.fitted_:
-            raise NotFittedError("This model is not fitted yet, call 'fit' with approriate arguments before 'inverse_transform'.")
+            raise NotFittedError(
+                "This model is not fitted yet, call 'fit' with approriate arguments before 'inverse_transform'."
+            )
         X_reconstructed = None
         Y_reconstructed = None
 

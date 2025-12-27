@@ -582,7 +582,11 @@ class PLSBase(abc.ABC):
         """
 
     @partial(jax.jit, static_argnums=(0, 2, 3))
-    def _step_2(self, XTY: jax.Array, M: int, K: int) -> Tuple[jax.Array, DTypeLike]:
+    def _step_2(
+        self, XTY: jax.Array, M: int, K: int
+    ) -> (
+        Tuple[jax.Array, DTypeLike] | Tuple[jax.Array, DTypeLike, jax.Array, jax.Array]
+    ):
         """
         The second step of the PLS algorithm. Computes the next weight vector and the
         associated norm.
@@ -617,20 +621,20 @@ class PLSBase(abc.ABC):
         if M == 1:
             norm = jla.norm(XTY)
             w = XTY / norm
+        elif M < K:
+            XTYTXTY = XTY.T @ XTY
+            eig_vals, eig_vecs = jla.eigh(XTYTXTY)
+            q = eig_vecs[:, -1:]
+            q = q.reshape(-1, 1)
+            w = XTY @ q
+            norm = jla.norm(w)
+            w = w / norm
+            return w, norm, q, eig_vals[-1]
         else:
-            if M < K:
-                XTYTXTY = XTY.T @ XTY
-                eig_vals, eig_vecs = jla.eigh(XTYTXTY)
-                q = eig_vecs[:, -1:]
-                q = q.reshape(-1, 1)
-                w = XTY @ q
-                norm = jla.norm(w)
-                w = w / norm
-            else:
-                XTYYTX = XTY @ XTY.T
-                eig_vals, eig_vecs = jla.eigh(XTYYTX)
-                w = eig_vecs[:, -1:]
-                norm = eig_vals[-1]
+            XTYYTX = XTY @ XTY.T
+            eig_vals, eig_vecs = jla.eigh(XTYYTX)
+            w = eig_vecs[:, -1:]
+            norm = eig_vals[-1]
         return w, norm
 
     def _step_3_base(
@@ -764,6 +768,74 @@ class PLSBase(abc.ABC):
         This method represents the fourth step of the PLS algorithm and should be
         implemented in concrete PLS classes.
         """
+
+    @partial(jax.jit, static_argnums=(0, 4, 5))
+    def _step_4_compute_q(
+        self,
+        r: jax.Array,
+        XTY: jax.Array,
+        tTt: jax.Array,
+        M: int,
+        K: int,
+        step_2_res: Tuple[jax.Array, DTypeLike]
+        | Tuple[jax.Array, DTypeLike, jax.Array],
+    ) -> jax.Array:
+        """
+        Selects the appropriate branch function for step 4 based on the number of
+        response and predictor variables.
+
+        Parameters
+        ----------
+        M : int
+            Number of response variables.
+
+        K : int
+            Number of predictor variables.
+
+        Returns
+        -------
+        branch_function : Callable[..., jax.Array]
+            The selected branch function for step 4.
+
+        Notes
+        -----
+        This method selects the appropriate branch function for step 4 of the PLS
+        algorithm based on the number of response and predictor variables.
+        """
+        # return self._step_4_compute_q_branch_3(r=r, XTY=XTY, tTt=tTt)
+        if M == 1:
+            norm = step_2_res[1]
+            return self._step_4_compute_q_branch_1(norm=norm, tTt=tTt)
+        elif M < K:
+            q = step_2_res[2]
+            largest_eigval = step_2_res[3]
+            return self._step_4_compute_q_branch_2(
+                q=q, largest_eigval=largest_eigval, tTt=tTt
+            )
+        else:
+            return self._step_4_compute_q_branch_3(r=r, XTY=XTY, tTt=tTt)
+
+    @partial(jax.jit, static_argnums=0)
+    def _step_4_compute_q_branch_1(self, norm: jax.Array, tTt: jax.Array) -> jax.Array:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_step_4_helper_branch_1 for {self.name} will be JIT compiled...")
+        return norm / tTt
+
+    @partial(jax.jit, static_argnums=0)
+    def _step_4_compute_q_branch_2(
+        self, q: jax.Array, largest_eigval: jax.Array, tTt: jax.Array
+    ) -> jax.Array:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_step_4_helper_branch_2 for {self.name} will be JIT compiled...")
+        return q * jnp.sqrt(largest_eigval) / tTt
+
+    @partial(jax.jit, static_argnums=0)
+    def _step_4_compute_q_branch_3(
+        self, r: jax.Array, XTY: jax.Array, tTt: jax.Array
+    ) -> jax.Array:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_step_4_helper_branch_3 for {self.name} will be JIT compiled...")
+        return (r.T @ XTY).T / tTt
 
     @partial(jax.jit, static_argnums=0)
     def _step_5(

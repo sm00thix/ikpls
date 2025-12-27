@@ -183,7 +183,14 @@ class PLS(PLSBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _step_4(
-        self, XTX: jax.Array, XTY: jax.Array, r: jax.Array
+        self,
+        XTX: jax.Array,
+        XTY: jax.Array,
+        r: jax.Array,
+        M: int,
+        K: int,
+        step_2_res: Tuple[jax.Array, DTypeLike]
+        | Tuple[jax.Array, DTypeLike, jax.Array, jax.Array],
     ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """
         Perform the fourth step of Improved Kernel PLS Algorithm #2.
@@ -215,7 +222,7 @@ class PLS(PLSBase):
         rXTX = r.T @ XTX
         tTt = rXTX @ r
         p = rXTX.T / tTt
-        q = (r.T @ XTY).T / tTt
+        q = self._step_4_compute_q(r, XTY, tTt, M, K, step_2_res)
         return tTt, p, q
 
     @partial(jax.jit, static_argnums=(0, 1, 5, 6))
@@ -280,7 +287,9 @@ class PLS(PLSBase):
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
-        w, norm = self._step_2(XTY, M, K)
+        step_2_res = self._step_2(XTY, M, K)
+        w = step_2_res[0]
+        norm = step_2_res[1]
         if not self.differentiable:
             self._weight_warning_callback(i, norm)
         # step 3
@@ -289,7 +298,7 @@ class PLS(PLSBase):
         else:
             r = self._step_3(i, w, P, R)
         # step 4
-        tTt, p, q = self._step_4(XTX, XTY, r)
+        tTt, p, q = self._step_4(XTX, XTY, r, M, K, step_2_res)
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
         return XTY, w, p, q, r

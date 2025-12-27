@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `fit_transform` method for all implementations that first calls `fit` and then `transform`.
 - Tests covering `transform`, `inverse_transform`, and `fit_transform`. // TODO: Add this.
 - Examples covering `transform`, `inverse_transform`, and `fit_transform`. // TODO: Add this.
-- Downloading the JAX dependencies is now optional and the default download does not include this. // TODO: Add this.
+- Downloading the JAX dependencies is now optional and the default download does not include this. // TODO: Add this. And update README.md with new installation instructions.
 
 ## [3.0.0] - 2025-07-11
 
