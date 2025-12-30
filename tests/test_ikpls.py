@@ -6256,4 +6256,51 @@ class TestClass:
 
         self.check_no_predict_no_transform_no_inverse_transform_before_fit(X, Y)
 
+    def check_R_Y_access(self, X, Y):
+        center_X = center_Y = scale_X = scale_Y = False
+        n_components = min(X.shape[0], X.shape[1])
+        models = self.fit_models(
+            X=X,
+            Y=Y,
+            n_components=n_components,
+            center_X=center_X,
+            center_Y=center_Y,
+            scale_X=scale_X,
+            scale_Y=scale_Y,
+            return_sk_pls=False,
+        )
+        for m in models[
+            :2
+        ]:  # Only NumPy PLS models TODO: Extend to JAX when implemented
+            for nc in range(1, n_components + 1):
+                _ = m.R_Y[nc]
+            with pytest.raises(KeyError):
+                _ = m.R_Y[0]
+            with pytest.raises(KeyError):
+                _ = m.R_Y[n_components + 1]
+
+    def test_R_Y_access(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        calls the `check_R_Y_access` method to validate that R_Y can be accessed for
+        valid number of components and raises KeyError for invalid number of components.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_R_Y_access(X, Y)
+
     # TODO: When all above work for NumPy PLS, also implement self.fitted_, transform, inverse_transform, and fit_transform for JAX.

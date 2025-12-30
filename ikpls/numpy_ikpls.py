@@ -6,6 +6,10 @@ https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-
 The PLS class subclasses scikit-learn's BaseEstimator to ensure compatibility with e.g.
 scikit-learn's cross_validate. It is written using NumPy.
 
+This file also contains the _R_Y_Dict class which is a dictionary subclass to store the
+PLS weights matrix to compute scores U directly from original Y for different numbers
+of components.
+
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
@@ -21,6 +25,101 @@ import numpy.typing as npt
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
+
+
+class _R_Y_Dict(dict):
+    """
+    A dictionary subclass to store the PLS weights matrix to compute scores U directly
+    from original Y for different numbers of components.
+    """
+
+    def __init__(self, Q: np.ndarray) -> None:
+        super().__init__()
+        self.Q = Q
+        self._valid_keys = set(range(1, Q.shape[1] + 1))
+        self._all_keys_and_values_computed = False
+
+    def keys(self):
+        """
+        The user wants the keys of the dictionairy so we must compute all valid keys
+        and their corresponding values if they have not already been computed.
+        """
+        self._compute_all_keys_and_values()
+        return super().keys()
+
+    def values(self):
+        """
+        The user wants the keys of the dictionairy so we must compute all valid keys
+        and their corresponding values if they have not already been computed.
+        """
+        self._compute_all_keys_and_values()
+        return super().values()
+
+    def _compute_all_keys_and_values(self) -> None:
+        """
+        Compute values for all valid keys if they have not already been computed.
+        """
+        if self._all_keys_and_values_computed:
+            return
+        for key in self._valid_keys:
+            if self._key_exists(key):
+                continue
+            self._set_value_for_key(key)
+        self._all_keys_and_values_computed = True
+
+    def _set_value_for_key(self, key: int) -> None:
+        """
+        Computes the PLS weights matrix to compute scores U directly from original Y
+        using `key` number of components and assigns it to self[key].
+
+        Parameters
+        ----------
+        key : int
+            Number of components.
+        """
+        if self.get(key) is None:
+            self[key] = la.pinv(self.Q[:, :key].T)
+
+    def _check_valid_key(self, key: int) -> None:
+        """
+        Checks if `key` is a valid key. If not, raises a KeyError.
+
+        Parameters
+        ----------
+        key : int
+            Number of components.
+
+        Raises
+        ------
+        KeyError
+            If `key` is not between 1 and the maximum number of components.
+        """
+        if key not in self._valid_keys:
+            return super().__getitem__(
+                key
+            )  # This will raise a KeyError from the base dict class
+
+    def _key_exists(self, key: int) -> None:
+        """
+        Checks if `key` already exists in the dictionary.
+
+        Parameters
+        ----------
+        key : int
+            Number of components.
+
+        Returns
+        -------
+        bool
+            True if `key` exists in the dictionary, False otherwise.
+        """
+        return key in self
+
+    def __getitem__(self, key: int) -> npt.NDArray[np.floating]:
+        if not self._key_exists(key):
+            self._check_valid_key(key)
+            self._set_value_for_key(key)
+        return super().__getitem__(key)
 
 
 class PLS(BaseEstimator):
@@ -210,10 +309,9 @@ class PLS(BaseEstimator):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
-        R_Y : None
-            List of PLS weights matrix to compute scores U directly from original Y. This is
-            assigned in `transform` when transforming Y for the first time after a call to
-            `fit`.
+        R_Y : dict[int, npt.NDArray[np.floating]]
+            Dictionary mapping number of components to PLS weights matrix to compute
+            scores U directly from original Y. See Notes for more information.
 
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
@@ -253,6 +351,14 @@ class PLS(BaseEstimator):
         --------
         transform : Transforms `X` and `Y` to their respective scores.
         fit_transform : Fits the model and returns the scores of `X` and `Y`.
+
+        Notes
+        -----
+        `R_Y` is provided for convenience only as it is not required to derive `B`.
+        Therefore, every value in `R_Y` is computed lazily and only actually evaluated
+        when accessed by its key for the first time after a call to `fit` - either by
+        the user or because it is needed by `transform`. This is made possible by a
+        custom class which subclasses dict to provide this functionality.
         """
         self.fitted_ = True
         X = self._convert_input_to_array(X)
@@ -343,7 +449,7 @@ class PLS(BaseEstimator):
         self.P = P.T
         self.Q = Q.T
         self.R = R.T
-        self.R_Y = None
+        self.R_Y = _R_Y_Dict(self.Q)
         if self.algorithm == 1:
             T = np.zeros(shape=(A, N), dtype=self.dtype)
             self.T = T.T
@@ -482,21 +588,6 @@ class PLS(BaseEstimator):
             Y_pred = Y_pred + self.Y_mean
         return Y_pred
 
-    def _compute_R_Y(self, n_components) -> None:
-        """
-        Computes the PLS weights matrix to compute scores U directly from original Y.
-        This is assigned in `transform` when transforming Y for the first time after a
-        call to `fit`.
-
-        Returns
-        -------
-        None.
-        """
-        if self.R_Y is None:
-            self.R_Y = {}
-        if self.R_Y.get(n_components) is None:
-            self.R_Y[n_components] = la.pinv(self.Q[:, :n_components].T)
-
     def transform(
         self,
         X: Optional[npt.ArrayLike] = None,
@@ -523,13 +614,6 @@ class PLS(BaseEstimator):
             scaling. If True, then the data is copied beforehand. If False, and `dtype`
             matches the type of `X` and `Y`, then centering and scaling is done inplace,
             modifying both arrays.
-
-        Attributes
-        ----------
-        R_Y : Dictionary of arrays of sizes (M, n_components)
-            PLS weights matrix to compute scores U directly from original Y. Only
-            assigned when transforming Y for the first time after a call to .fit().
-            The weights for n_components are stored in self.R_Y[n_components].
 
         Returns
         -------
@@ -584,7 +668,6 @@ class PLS(BaseEstimator):
                 Y -= self.Y_mean
             if self.scale_Y:
                 Y /= self.Y_std
-            self._compute_R_Y(n_components=n_components)
             U = Y @ self.R_Y[n_components]
         if X is not None and Y is not None:
             return T, U
