@@ -49,11 +49,19 @@ class _R_Y_Dict(dict):
 
     def values(self):
         """
-        The user wants the keys of the dictionairy so we must compute all valid keys
+        The user wants the values of the dictionairy so we must compute all valid keys
         and their corresponding values if they have not already been computed.
         """
         self._compute_all_keys_and_values()
         return super().values()
+
+    def items(self):
+        """
+        The user wants the items of the dictionairy so we must compute all valid keys
+        and their corresponding values if they have not already been computed.
+        """
+        self._compute_all_keys_and_values()
+        return super().items()
 
     def _compute_all_keys_and_values(self) -> None:
         """
@@ -309,9 +317,11 @@ class PLS(BaseEstimator):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
-        R_Y : dict[int, npt.NDArray[np.floating]]
+        R_Y : dict[n_components, Array of shape (M, n_components)]
             Dictionary mapping number of components to PLS weights matrix to compute
-            scores U directly from original Y. See Notes for more information.
+            scores U directly from original Y. n_components is any integer from 1 to A.
+            Any value in R_Y is computed lazily and only actually evaluated when
+            accessed. See Notes for more information.
 
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
@@ -357,8 +367,10 @@ class PLS(BaseEstimator):
         `R_Y` is provided for convenience only as it is not required to derive `B`.
         Therefore, every value in `R_Y` is computed lazily and only actually evaluated
         when accessed by its key for the first time after a call to `fit` - either by
-        the user or because it is needed by `transform`. This is made possible by a
-        custom class which subclasses dict to provide this functionality.
+        the user or because it is needed by `transform`. Calling `R_Y.keys()` or
+        `R_Y.values()` or `R_Y.items()` will trigger the computation of all key-value
+        pairs in `R_Y`. All of this functionality is made possible by a custom class
+        which subclasses dict.
         """
         self.fitted_ = True
         X = self._convert_input_to_array(X)
