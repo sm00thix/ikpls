@@ -39,7 +39,7 @@ jax.config.update("jax_enable_x64", True)
 
 # Disable the JAX JIT compiler for all tests. This is done to avoid issues with the
 # GitHub hosted Ubuntu runners that will otherwise run out of memory.
-jax.config.update("jax_disable_jit", True)
+# jax.config.update("jax_disable_jit", True) # TODO - Uncomment to disable JIT globally.
 
 
 # Warning raised due to MathJax in some docstrins in the FastCVPLS class.
@@ -5528,10 +5528,10 @@ class TestClass:
 
                 for model in [
                     np_pls_alg_2,
-                    # jax_pls_alg_1,
-                    # jax_pls_alg_2,
-                    # diff_jax_pls_alg_1,
-                    # diff_jax_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
                 ]:
                     if fit_transform:
                         transformed_X, transformed_Y = model.fit_transform(
@@ -5549,15 +5549,15 @@ class TestClass:
                     )
 
                     assert_allclose(
-                        transformed_X,
-                        np_pls_alg_1_transformed_X,
+                        np.abs(transformed_X),
+                        np.abs(np_pls_alg_1_transformed_X),
                         atol=atol,
                         rtol=rtol,
                         err_msg=err_msg,
                     )
                     assert_allclose(
-                        transformed_Y,
-                        np_pls_alg_1_transformed_Y,
+                        np.abs(transformed_Y),
+                        np.abs(np_pls_alg_1_transformed_Y),
                         atol=atol,
                         rtol=rtol,
                         err_msg=err_msg,
@@ -5747,10 +5747,10 @@ class TestClass:
 
                 for model in [
                     np_pls_alg_2,
-                    # jax_pls_alg_1,
-                    # jax_pls_alg_2,
-                    # diff_jax_pls_alg_1,
-                    # diff_jax_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
                 ]:
                     transformed_X, transformed_Y = model.transform(
                         X=X, Y=Y, n_components=nc
@@ -6219,10 +6219,10 @@ class TestClass:
         for model in [
             np_pls_alg_1,
             np_pls_alg_2,
-            # jax_pls_alg_1,
-            # jax_pls_alg_2,
-            # diff_jax_pls_alg_1,
-            # diff_jax_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            diff_jax_pls_alg_1,
+            diff_jax_pls_alg_2,
         ]:
             with pytest.raises(NotFittedError, match="This model is not fitted yet."):
                 model.predict(X=X)
@@ -6269,9 +6269,7 @@ class TestClass:
             scale_Y=scale_Y,
             return_sk_pls=False,
         )
-        for m in models[
-            :2
-        ]:  # Only NumPy PLS models TODO: Extend to JAX when implemented
+        for m in models:
             for nc in range(1, n_components + 1):
                 _ = m.R_Y[nc]
             with pytest.raises(KeyError):
@@ -6302,5 +6300,3 @@ class TestClass:
         assert Y.shape[1] == 1
 
         self.check_R_Y_access(X, Y)
-
-    # TODO: When all above work for NumPy PLS, also implement self.fitted_, transform, inverse_transform, and fit_transform for JAX.

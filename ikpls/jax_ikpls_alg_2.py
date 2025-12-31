@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike, DTypeLike
 
-from ikpls.jax_ikpls_base import PLSBase
+from ikpls.jax_ikpls_base import PLSBase, _R_Y_Mapping
 
 
 class PLS(PLSBase):
@@ -181,7 +181,7 @@ class PLS(PLSBase):
         XTY = self._compute_initial_XTY(XT, Y)
         return XTX, XTY
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0, 4, 5))
     def _step_4(
         self,
         XTX: jax.Array,
@@ -189,8 +189,9 @@ class PLS(PLSBase):
         r: jax.Array,
         M: int,
         K: int,
-        step_2_res: Tuple[jax.Array, DTypeLike]
-        | Tuple[jax.Array, DTypeLike, jax.Array, jax.Array],
+        norm: DTypeLike,
+        q: Optional[jax.Array] = None,
+        largest_eigval: Optional[jax.Array] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """
         Perform the fourth step of Improved Kernel PLS Algorithm #2.
@@ -222,7 +223,7 @@ class PLS(PLSBase):
         rXTX = r.T @ XTX
         tTt = rXTX @ r
         p = rXTX.T / tTt
-        q = self._step_4_compute_q(r, XTY, tTt, M, K, step_2_res)
+        q = self._step_4_compute_q(r, XTY, tTt, M, K, norm, q, largest_eigval)
         return tTt, p, q
 
     @partial(jax.jit, static_argnums=(0, 1, 5, 6))
@@ -298,7 +299,7 @@ class PLS(PLSBase):
         else:
             r = self._step_3(i, w, P, R)
         # step 4
-        tTt, p, q = self._step_4(XTX, XTY, r, M, K, step_2_res)
+        tTt, p, q = self._step_4(XTX, XTY, r, M, K, *step_2_res[1:])
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
         return XTY, w, p, q, r
@@ -348,6 +349,12 @@ class PLS(PLSBase):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
+        R_Y : Mapping[int, Array]
+            Mapping from number of components to PLS weights matrix to compute scores U
+            directly from original Y. Keys range from 1 to A. Values are arrays of
+            shape (M, n_components) where n_components is the key. Values are computed
+            lazily and cached upon first access. See Notes for more information.
+
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None.
 
@@ -380,7 +387,16 @@ class PLS(PLSBase):
         stateless_fit : Performs the same operation but returns the output matrices
         instead of storing them in the class instance. stateless_fit does not raise an
         error if `weights` are provided and not all weights are non-negative.
+
+        Notes
+        -----
+        `R_Y` is provided for convenience only as it is not required to derive `B`.
+        Therefore, every value in `R_Y` is computed lazily and only actually evaluated
+        when accessed by its key for the first time after a call to `fit` - either by
+        the user or because it is needed by `transform`. After a value is computed, it
+        is cached for fast future retrieval. R_Y is implemented as a concrete Mapping.
         """
+        super().fit(X, Y, A, weights)
         if weights is not None:
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
@@ -399,6 +415,7 @@ class PLS(PLSBase):
         self.P = P.T
         self.Q = Q.T
         self.R = R.T
+        self.R_Y = _R_Y_Mapping(QT=Q)
 
     @partial(jax.jit, static_argnums=(0, 3))
     def stateless_fit(

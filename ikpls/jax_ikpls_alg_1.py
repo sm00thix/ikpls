@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike, DTypeLike
 
-from ikpls.jax_ikpls_base import PLSBase
+from ikpls.jax_ikpls_base import PLSBase, _R_Y_Mapping
 
 
 class PLS(PLSBase):
@@ -213,7 +213,7 @@ class PLS(PLSBase):
             print(f"_step_1 for {self.name} will be JIT compiled...")
         return self._compute_initial_XTY(X.T, Y)
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0, 4, 5))
     def _step_4(
         self,
         X: jax.Array,
@@ -221,9 +221,10 @@ class PLS(PLSBase):
         r: jax.Array,
         M: int,
         K: int,
-        step_2_res: Tuple[jax.Array, DTypeLike]
-        | Tuple[jax.Array, DTypeLike, jax.Array, jax.Array],
-    ):
+        norm: DTypeLike,
+        q: Optional[jax.Array] = None,
+        largest_eigval: Optional[jax.Array] = None,
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Perform the fourth step of Improved Kernel PLS Algorithm #1.
 
@@ -262,7 +263,7 @@ class PLS(PLSBase):
         tT = t.T
         tTt = tT @ t
         p = (tT @ X).T / tTt
-        q = self._step_4_compute_q(r, XTY, tTt, M, K, step_2_res)
+        q = self._step_4_compute_q(r, XTY, tTt, M, K, norm, q, largest_eigval)
         return tTt, p, q, t
 
     @partial(jax.jit, static_argnums=(0, 1, 5, 6))
@@ -348,7 +349,7 @@ class PLS(PLSBase):
         else:
             r = self._step_3(i, w, P, R)
         # step 4
-        tTt, p, q, t = self._step_4(X, XTY, r, M, K, step_2_res)
+        tTt, p, q, t = self._step_4(X, XTY, r, M, K, *step_2_res[1:])
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
         return XTY, w, p, q, r, t
@@ -437,7 +438,16 @@ class PLS(PLSBase):
         stateless_fit : Performs the same operation but returns the output matrices
         instead of storing them in the class instance. stateless_fit does not raise an
         error if `weights` are provided and not all weights are non-negative.
+
+        Notes
+        -----
+        `R_Y` is provided for convenience only as it is not required to derive `B`.
+        Therefore, every value in `R_Y` is computed lazily and only actually evaluated
+        when accessed by its key for the first time after a call to `fit` - either by
+        the user or because it is needed by `transform`. After a value is computed, it
+        is cached for fast future retrieval. R_Y is implemented as a concrete Mapping.
         """
+        super().fit(X, Y, A, weights)
         if weights is not None:
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
@@ -456,6 +466,7 @@ class PLS(PLSBase):
         self.P = P.T
         self.Q = Q.T
         self.R = R.T
+        self.R_Y = _R_Y_Mapping(QT=Q)
         self.T = T.T
 
     @partial(jax.jit, static_argnums=(0, 3))

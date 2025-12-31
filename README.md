@@ -152,6 +152,17 @@ jax.config.update("jax_enable_x64", True)
 > # X rotations matrix of shape (K, A) = (50, 20).
 > np_ikpls_alg_1.R
 >
+> # Mapping from n_components to Y rotations matrix of shape (M, n_components).
+> # This is not required to compute np_ikpls_alg_1.B and is therefore lazily evaluated and cached.
+> np_ikpls_alg_1.R_Y
+>
+> # Y rotations matrix of shape (M, A) = (10, 20)
+> np_ikpls_alg_1.R_Y[20] # R_Y is now cached for 20 components.
+>
+> # Y rotations matrix for 19 components of shape (M, 19) = (10, 19)
+> # This is NOT the same as np_ikpls_alg_1.R_Y[20][:, :19]
+> np_ikpls_alg_1.R_Y[19] # R_Y is now cached for 20 and 19 components.
+>
 > # X scores matrix of shape (N, A) = (100, 20).
 > # This is only computed for IKPLS Algorithm #1.
 > np_ikpls_alg_1.T
