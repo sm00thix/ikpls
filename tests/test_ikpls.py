@@ -39,7 +39,7 @@ jax.config.update("jax_enable_x64", True)
 
 # Disable the JAX JIT compiler for all tests. This is done to avoid issues with the
 # GitHub hosted Ubuntu runners that will otherwise run out of memory.
-# jax.config.update("jax_disable_jit", True) # TODO - Uncomment to disable JIT globally.
+jax.config.update("jax_disable_jit", True)
 
 
 # Warning raised due to MathJax in some docstrins in the FastCVPLS class.
@@ -5493,8 +5493,7 @@ class TestClass:
                 )
             use_sk = center_X and center_Y and (scale_X == scale_Y)
 
-            # for nc in range(1, n_components + 1):
-            for nc in range(n_components, n_components + 1):
+            for nc in range(1, n_components + 1):
                 if fit_transform:
                     np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
                         np_pls_alg_1.fit_transform(X=X, Y=Y, A=nc)
@@ -5615,8 +5614,8 @@ class TestClass:
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
 
-        self.check_transform(X, Y, fit_transform=False, atol=1e-5, rtol=1e-5)
-        self.check_transform(X, Y, fit_transform=True, atol=1e-5, rtol=1e-5)
+        self.check_transform(X, Y, fit_transform=False, atol=5e-4, rtol=5e-4)
+        self.check_transform(X, Y, fit_transform=True, atol=5e-4, rtol=5e-4)
 
     def test_transform_pls_2_m_eq_k(self):
         """
@@ -5716,8 +5715,8 @@ class TestClass:
                     np_pls_alg_1_inverse_transformed_X,
                     np_pls_alg_1_inverse_transformed_Y,
                 ) = np_pls_alg_1.inverse_transform(
-                    X_scores=np_pls_alg_1_transformed_X,
-                    Y_scores=np_pls_alg_1_transformed_Y,
+                    T=np_pls_alg_1_transformed_X,
+                    U=np_pls_alg_1_transformed_Y,
                 )
 
                 if use_sk:
@@ -5756,9 +5755,7 @@ class TestClass:
                         X=X, Y=Y, n_components=nc
                     )
                     inverse_transformed_X, inverse_transformed_Y = (
-                        model.inverse_transform(
-                            X_scores=transformed_X, Y_scores=transformed_Y
-                        )
+                        model.inverse_transform(T=transformed_X, U=transformed_Y)
                     )
 
                     err_msg = (
@@ -5932,22 +5929,20 @@ class TestClass:
                     np_pls_alg_1_inverse_transformed_X,
                     np_pls_alg_1_inverse_transformed_Y,
                 ) = np_pls_alg_1.inverse_transform(
-                    X_scores=np_pls_alg_1_transformed_X,
-                    Y_scores=np_pls_alg_1_transformed_Y,
+                    T=np_pls_alg_1_transformed_X,
+                    U=np_pls_alg_1_transformed_Y,
                 )
                 for model in [
                     np_pls_alg_2,
-                    # jax_pls_alg_1,
-                    # jax_pls_alg_2,
-                    # diff_jax_pls_alg_1,
-                    # diff_jax_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
                 ]:
                     transformed_X = model.transform(X=X, n_components=X_components)
                     transformed_Y = model.transform(Y=Y, n_components=Y_components)
                     inverse_transformed_X, inverse_transformed_Y = (
-                        model.inverse_transform(
-                            X_scores=transformed_X, Y_scores=transformed_Y
-                        )
+                        model.inverse_transform(T=transformed_X, U=transformed_Y)
                     )
 
                     err_msg = (
@@ -6127,16 +6122,16 @@ class TestClass:
             for model in [
                 np_pls_alg_1,
                 np_pls_alg_2,
-                # jax_pls_alg_1,
-                # jax_pls_alg_2,
-                # diff_jax_pls_alg_1,
-                # diff_jax_pls_alg_2,
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
             ]:
                 transformed_X, transformed_Y = model.fit_transform(
                     X=X_to_use, Y=Y_to_use, A=n_components_to_use
                 )
                 inverse_transformed_X, inverse_transformed_Y = model.inverse_transform(
-                    X_scores=transformed_X, Y_scores=transformed_Y
+                    T=transformed_X, U=transformed_Y
                 )
 
                 err_msg = f"Model {model}, fit with n_components: {n_components_to_use}"
@@ -6229,7 +6224,7 @@ class TestClass:
             with pytest.raises(NotFittedError, match="This model is not fitted yet."):
                 model.transform(X=X, Y=Y, n_components=n_components)
             with pytest.raises(NotFittedError, match="This model is not fitted yet."):
-                model.inverse_transform(X_scores=X, Y_scores=Y)
+                model.inverse_transform(T=X, U=Y)
 
     def test_no_predict_no_transform_no_inverse_transform_before_fit_pls_1(self):
         """

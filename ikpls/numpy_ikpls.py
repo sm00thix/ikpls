@@ -1,6 +1,6 @@
 """
-Contains the PLS Class which implements partial least-squares regression using Improved
-Kernel PLS by Dayal and MacGregor:
+This file contains the PLS Class which implements partial least-squares regression
+using Improved Kernel PLS by Dayal and MacGregor:
 https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23
 
 The PLS class subclasses scikit-learn's BaseEstimator to ensure compatibility with e.g.
@@ -16,7 +16,7 @@ E-mail: ocge@foss.dk
 
 import warnings
 from collections.abc import Callable, Hashable, Mapping
-from typing import Any, Iterable, Optional, Tuple, Union
+from typing import Any, Iterable, Optional, Self, Tuple, Union
 
 import joblib
 import numpy as np
@@ -115,7 +115,7 @@ class PLS(BaseEstimator):
         scale_X: bool = True,
         scale_Y: bool = True,
         ddof: int = 1,
-        dtype: np.floating = np.float64,
+        dtype: type[np.floating] = np.float64,
     ) -> None:
         self.algorithm = algorithm
         self.center_X = center_X
@@ -168,25 +168,323 @@ class PLS(BaseEstimator):
         )
         self.max_stable_components = i
 
-    def _convert_input_to_array(self, arr: npt.ArrayLike) -> npt.NDArray[np.floating]:
+    def _convert_input_to_array(
+        self, arr: Optional[npt.ArrayLike]
+    ) -> Optional[npt.NDArray[np.floating]]:
         """
         Converts input array to numpy array of type self.dtype. Inserts a second axis
         if the input array is 1-dimensional.
 
         Parameters
         ----------
-        arr : ArrayLike
+        arr : ArrayLike or None
             Input array.
 
         Returns
         -------
-        array_converted : Array of shape of input array
+        array_converted : Array of shape of input array or None
             Converted input array.
         """
-        arr = np.asarray(arr, dtype=self.dtype)
-        if arr.ndim == 1:
-            arr = arr.reshape(-1, 1)
+        if arr is not None:
+            arr = np.asarray(arr, dtype=self.dtype)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
         return arr
+
+    def _copy_arrays(
+        self,
+        copy: bool,
+        X: Optional[npt.NDArray[np.floating]] = None,
+        Y: Optional[npt.NDArray[np.floating]] = None,
+    ) -> Tuple[Optional[npt.NDArray[np.floating]], Optional[npt.NDArray[np.floating]]]:
+        """
+        Copies `X and `Y` so that downstream centering and scaling do not modify the
+        input directly but instead work on copies thereof.
+
+        Parameters
+        ----------
+        copy: bool
+            Whether to copy arrays or not.
+        X : Array of shape (N, K) or None
+            Predictor variables.
+
+        Y : Array of shape (N, M) or None
+            Response variables.
+
+        Returns
+        -------
+        X_copy : Array of shape (N, K) or None
+            A copy of `X` if it is provided and the following conditions are met:
+            `copy` is True, and `X` will be either centered or scaled.
+
+        Y_copy : Array of shape (N, M) or None
+            A copy of `Y` if it is provided and the following conditions are met:
+            `copy` is True, and `Y` will be either centered or scaled.
+        """
+        if copy:
+            if X is not None and (self.center_X or self.scale_X):
+                X = X.copy()
+            if Y is not None and (self.center_Y or self.scale_Y):
+                Y = Y.copy()
+        return X, Y
+
+    def _get_input(
+        self,
+        copy: bool,
+        X: Optional[npt.ArrayLike] = None,
+        Y: Optional[npt.ArrayLike] = None,
+        weights: Optional[npt.ArrayLike] = None,
+    ) -> Tuple[
+        Optional[npt.ArrayLike], Optional[npt.ArrayLike], Optional[npt.ArrayLike]
+    ]:
+        """
+        Applies `self._convert_input_to_array` on `X`, `Y`, and `weights` and then
+        applies `self._copy_arrays` to `X` and `Y`. See those two functions for a
+        description of parameters and return values.
+
+        Returns
+        -------
+        X, Y, weights
+            Converted inputs for safe downstream processing.
+        """
+
+        X = self._convert_input_to_array(arr=X)
+        Y = self._convert_input_to_array(arr=Y)
+        weights = self._convert_input_to_array(arr=weights)
+        if weights is not None:
+            self._check_nonnegative_weights(weights=weights)
+        X, Y = self._copy_arrays(copy=copy, X=X, Y=Y)
+        return X, Y, weights
+
+    def _center_scale_X_Y(
+        self,
+        X: Optional[npt.NDArray[np.floating]] = None,
+        Y: Optional[npt.NDArray[np.floating]] = None,
+    ) -> Tuple[Optional[npt.NDArray[np.floating]], Optional[npt.NDArray[np.floating]]]:
+        """
+        Centers and scales the input array based on the model's parameters.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K) or None
+            Predictor variables.
+
+        Y : Array of shape (N, M) or None
+            Response variables.
+
+        Returns
+        -------
+        X_centered_scaled : Array of shape (N, K) or None
+            Potentially centered and scaled `X`.
+
+        Y_centered_scaled : Array of shape (N, M) or None
+            Potentially centered and scaled `Y`.
+        """
+        if X is not None:
+            if self.center_X:
+                X -= self.X_mean if self.X_mean is not None else X
+            if self.scale_X:
+                X /= self.X_std if self.X_std is not None else X
+        if Y is not None:
+            if self.center_Y:
+                Y -= self.Y_mean if self.Y_mean is not None else Y
+            if self.scale_Y:
+                Y /= self.Y_std if self.Y_std is not None else Y
+        return (X, Y)
+
+    def _un_center_scale_X_Y(
+        self,
+        X: Optional[npt.NDArray[np.floating]] = None,
+        Y: Optional[npt.NDArray[np.floating]] = None,
+    ) -> Tuple[Optional[npt.NDArray[np.floating]], Optional[npt.NDArray[np.floating]]]:
+        """
+        Restores `X` and `Y`to their original scale and location by undoing any
+        centering and scaling.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K) or None
+            Predictor variables.
+
+        Y : Array of shape (N, M) or None
+            Response variables.
+
+        Returns
+        -------
+        X_restored : Array of shape (N, K) or None
+            `X` with any centering and scaling undone.
+
+        Y_restored : Array of shape (N, M) or None
+            `Y` with any centering and scaling undone.
+        """
+        if X is not None:
+            if self.scale_X:
+                X *= self.X_std
+            if self.center_X:
+                X += self.X_mean
+        if Y is not None:
+            if self.scale_Y:
+                Y *= self.Y_std
+            if self.center_Y:
+                Y += self.Y_mean
+        return (X, Y)
+
+    def _check_nonnegative_weights(self, weights: npt.NDArray[np.floating]) -> None:
+        """
+        Checks that weights are non-negative.
+
+        Parameters
+        ----------
+        weights : Array of shape (N, 1)
+            Sample weights used to fit PLS.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If weights are not all non-negative.
+        """
+        if np.any(weights < 0):
+            raise ValueError("Weights must be non-negative.")
+
+    def _check_num_nonzero_weights_greater_than_ddof(
+        self, num_nonzero_weights: int
+    ) -> None:
+        """
+        Checks that the number of nonzero weights are greater than `self.ddof` if
+        either of `self.scale_X` or `self.scale_Y` is True so we must compute the
+        corresponding weighted standard deviation.
+
+        Parameters
+        ----------
+        num_nonzero_weights : int
+            The number of nonzero weights."
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If the number of nonzero weights is not greater than `self.ddof`
+        """
+        if self.scale_X or self.scale_Y:
+            if not num_nonzero_weights > self.ddof:
+                raise ValueError(
+                    f"The number of nonzero weights: {num_nonzero_weights} must be greater than ddof: {self.ddof}"
+                )
+
+    def _compute_mean_and_std(
+        self,
+        X: npt.NDArray[np.floating],
+        Y: npt.NDArray[np.floating],
+        weights: Optional[npt.NDArray[np.floating]],
+    ) -> None:
+        """
+        Computes the weighted means and standard deviations for `X` and `Y`.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K)
+            Predictor variables.
+
+        Y : Array of shape (N, M):
+            Response variables.
+
+        weights : Array of shape (N, 1) or None
+            Sample weights.
+
+        Attributes
+        ----------
+        X_mean : Array of shape (1, K) or None
+            Mean of X. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
+
+        Y_mean : Array of shape (1, M) or None
+            Mean of Y. If centering is not performed, this is None. If weights are
+            used, then this is the weighted mean.
+
+        X_std : Array of shape (1, K) or None
+            Sample standard deviation of X. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
+
+        Y_std : Array of shape (1, M) or None
+            Sample standard deviation of Y. If scaling is not performed, this is None.
+            If weights are used, then this is the weighted standard deviation.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If `weights` are provided and scaling of `X` or `Y` is required and the
+            number of non-negative weights is less or equal to `self.ddof`.
+        """
+        if not (self.center_X or self.center_Y or self.scale_X or self.scale_Y):
+            return
+        if weights is not None:
+            flattened_weights = weights.flatten()
+            if self.scale_X or self.scale_Y:
+                num_non_zero_weights = np.asarray(
+                    np.count_nonzero(weights), dtype=self.dtype
+                )
+                self._check_num_nonzero_weights_greater_than_ddof(
+                    num_nonzero_weights=num_non_zero_weights
+                )
+                scale_dof = num_non_zero_weights - self.ddof
+                avg_non_zero_weights = np.sum(weights) / num_non_zero_weights
+        else:
+            flattened_weights = None
+
+        if self.center_X or self.scale_X:
+            self.X_mean = np.asarray(
+                np.average(X, axis=0, weights=flattened_weights, keepdims=True),
+                dtype=self.dtype,
+            )
+
+        if self.center_Y or self.scale_Y:
+            self.Y_mean = np.asarray(
+                np.average(Y, axis=0, weights=flattened_weights, keepdims=True),
+                dtype=self.dtype,
+            )
+
+        if self.scale_X:
+            if weights is None:
+                self.X_std = X.std(
+                    axis=0,
+                    ddof=self.ddof,
+                    dtype=self.dtype,
+                    keepdims=True,
+                    mean=self.X_mean,
+                )
+            else:
+                self.X_std = np.sqrt(
+                    np.sum(weights * (X - self.X_mean) ** 2, axis=0, keepdims=True)
+                    / (scale_dof * avg_non_zero_weights)
+                )
+            self.X_std[self.X_std <= self.eps] = 1
+
+        if self.scale_Y:
+            if weights is None:
+                self.Y_std = Y.std(
+                    axis=0,
+                    ddof=self.ddof,
+                    dtype=self.dtype,
+                    keepdims=True,
+                    mean=self.Y_mean,
+                )
+            else:
+                self.Y_std = np.sqrt(
+                    np.sum(weights * (Y - self.Y_mean) ** 2, axis=0, keepdims=True)
+                    / (scale_dof * avg_non_zero_weights)
+                )
+            self.Y_std[self.Y_std <= self.eps] = 1
 
     def fit(
         self,
@@ -195,7 +493,7 @@ class PLS(BaseEstimator):
         A: int,
         weights: Optional[npt.ArrayLike] = None,
         copy: bool = True,
-    ) -> None:
+    ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -271,12 +569,17 @@ class PLS(BaseEstimator):
 
         Returns
         -------
-        None.
+        self : PLS
+            Fitted model.
 
         Raises
         ------
         ValueError
             If `weights` are provided and not all weights are non-negative.
+
+        ValueError
+            If `weights` are provided, and `scale_X` or `scale_Y` is True, and the
+            number of non-zero weights is not greater than `ddof`.
 
         Warns
         -----
@@ -298,84 +601,12 @@ class PLS(BaseEstimator):
         is cached for fast future retrieval. R_Y is implemented as a concrete Mapping.
         """
         self.fitted_ = True
-        X = self._convert_input_to_array(X)
-        Y = self._convert_input_to_array(Y)
+        X, Y, weights = self._get_input(copy=copy, X=X, Y=Y, weights=weights)
+        self._compute_mean_and_std(X=X, Y=Y, weights=weights)
+        X, Y = self._center_scale_X_Y(X=X, Y=Y)
 
         N, K = X.shape
         M = Y.shape[1]
-
-        if weights is not None:
-            weights = np.asarray(weights, dtype=self.dtype)
-            weights = np.reshape(weights, (-1, 1))
-            flattened_weights = weights.flatten()
-            if not np.all(weights >= 0):
-                raise ValueError("Weights must be non-negative.")
-            if self.scale_X or self.scale_Y:
-                num_non_zero_weights = np.asarray(
-                    np.count_nonzero(weights), dtype=self.dtype
-                )
-                scale_dof = num_non_zero_weights - self.ddof
-                avg_non_zero_weights = np.sum(weights) / num_non_zero_weights
-        else:
-            flattened_weights = None
-
-        if (self.center_X or self.scale_X) and copy:
-            X = X.copy()
-
-        if (self.center_Y or self.scale_Y) and copy:
-            Y = Y.copy()
-
-        if self.center_X or self.scale_X:
-            self.X_mean = np.asarray(
-                np.average(X, axis=0, weights=flattened_weights, keepdims=True),
-                dtype=self.dtype,
-            )
-        if self.center_X:
-            X -= self.X_mean
-
-        if self.center_Y or self.scale_Y:
-            self.Y_mean = np.asarray(
-                np.average(Y, axis=0, weights=flattened_weights, keepdims=True),
-                dtype=self.dtype,
-            )
-        if self.center_Y:
-            Y -= self.Y_mean
-
-        if self.scale_X:
-            new_X_mean = 0 if self.center_X else self.X_mean
-            if weights is None:
-                self.X_std = X.std(
-                    axis=0,
-                    ddof=self.ddof,
-                    dtype=self.dtype,
-                    keepdims=True,
-                    mean=new_X_mean,
-                )
-            else:
-                self.X_std = np.sqrt(
-                    np.sum(weights * (X - new_X_mean) ** 2, axis=0, keepdims=True)
-                    / (scale_dof * avg_non_zero_weights)
-                )
-            self.X_std[np.abs(self.X_std) <= self.eps] = 1
-            X /= self.X_std
-
-        if self.scale_Y:
-            new_Y_mean = 0 if self.center_Y else self.Y_mean
-            if weights is None:
-                self.Y_std = Y.std(
-                    axis=0,
-                    ddof=self.ddof,
-                    dtype=self.dtype,
-                    keepdims=True,
-                    mean=new_Y_mean,
-                )
-            else:
-                self.Y_std = np.sqrt(
-                    np.sum(weights * (Y - new_Y_mean) ** 2, axis=0, keepdims=True)
-                    / (scale_dof * avg_non_zero_weights)
-                )
-            self.Y_std[np.abs(self.Y_std) <= self.eps] = 1
-            Y /= self.Y_std
 
         self.B = np.zeros(shape=(A, K, M), dtype=self.dtype)
         W = np.zeros(shape=(A, K), dtype=self.dtype)
@@ -475,6 +706,8 @@ class PLS(BaseEstimator):
             # Compute regression coefficients
             self.B[i] = self.B[i - 1] + r @ q.T
 
+        return self
+
     def predict(
         self, X: npt.ArrayLike, n_components: Optional[int] = None
     ) -> npt.NDArray[np.floating]:
@@ -508,21 +741,15 @@ class PLS(BaseEstimator):
             raise NotFittedError(
                 "This model is not fitted yet, call 'fit' with approriate arguments before 'predict'."
             )
-        X = self._convert_input_to_array(X)
-        if self.center_X:
-            X = X - self.X_mean
-        if self.scale_X:
-            X = X / self.X_std
+        X, _, _ = self._get_input(copy=True, X=X)
+        X, _ = self._center_scale_X_Y(X=X)
 
         if n_components is None:
             Y_pred = X @ self.B
         else:
             Y_pred = X @ self.B[n_components - 1]
 
-        if self.scale_Y:
-            Y_pred = Y_pred * self.Y_std
-        if self.center_Y:
-            Y_pred = Y_pred + self.Y_mean
+        _, Y_pred = self._un_center_scale_X_Y(Y=Y_pred)
         return Y_pred
 
     def transform(
@@ -588,23 +815,11 @@ class PLS(BaseEstimator):
             )
         if n_components is None:
             n_components = self.A
+        X, Y, _ = self._get_input(copy=copy, X=X, Y=Y)
+        X, Y = self._center_scale_X_Y(X=X, Y=Y)
         if X is not None:
-            X = self._convert_input_to_array(X)
-            if (self.center_X or self.scale_X) and copy:
-                X = X.copy()
-            if self.center_X:
-                X -= self.X_mean
-            if self.scale_X:
-                X /= self.X_std
             T = X @ self.R[:, :n_components]
         if Y is not None:
-            Y = self._convert_input_to_array(Y)
-            if (self.center_Y or self.scale_Y) and copy:
-                Y = Y.copy()
-            if self.center_Y:
-                Y -= self.Y_mean
-            if self.scale_Y:
-                Y /= self.Y_std
             U = Y @ self.R_Y[n_components]
         if X is not None and Y is not None:
             return T, U
@@ -660,25 +875,25 @@ class PLS(BaseEstimator):
 
     def inverse_transform(
         self,
-        X_scores: Optional[npt.ArrayLike] = None,
-        Y_scores: Optional[npt.ArrayLike] = None,
+        T: Optional[npt.ArrayLike] = None,
+        U: Optional[npt.ArrayLike] = None,
     ) -> Union[npt.ArrayLike, Tuple[npt.ArrayLike, npt.ArrayLike], None]:
         """
         Reconstructs `X` and `Y` from their respective scores.
 
         Parameters
         ----------
-        X_scores : Array of shape (N, n_components) or (N, A) or None, optional, default=None
-            Scores of predictor variables.
-        Y_scores : Array of shape (N, n_components) or (N, A) or None, optional, default=None
-            Scores of response variables.
+        T : Array of shape (N, n_X_components) or (N, A) or None, optional, default=None
+            Scores of predictor variables (X).
+        U : Array of shape (N, n_Y_components) or (N, A) or None, optional, default=None
+            Scores of response variables (Y).
 
         Returns
         -------
         X_reconstructed : Array of shape (N, K)
-            If `X_scores` is not None, returns the reconstructed `X`.
+            If `T` is not None, returns the reconstructed `X`.
         Y_reconstructed : Array of shape (N, M)
-            If `Y_scores` is not None, returns the reconstructed `Y`.
+            If `U` is not None, returns the reconstructed `Y`.
 
         Raises
         ------
@@ -696,24 +911,20 @@ class PLS(BaseEstimator):
             )
         X_reconstructed = None
         Y_reconstructed = None
+        T = self._convert_input_to_array(arr=T)
+        U = self._convert_input_to_array(arr=U)
 
-        if X_scores is not None:
-            X_scores = self._convert_input_to_array(X_scores)
-            X_components = X_scores.shape[1]
-            X_reconstructed = X_scores @ self.P[:, :X_components].T
-            if self.scale_X:
-                X_reconstructed = X_reconstructed * self.X_std
-            if self.center_X:
-                X_reconstructed = X_reconstructed + self.X_mean
+        if T is not None:
+            X_components = T.shape[1]
+            X_reconstructed = T @ self.P[:, :X_components].T
 
-        if Y_scores is not None:
-            Y_scores = self._convert_input_to_array(Y_scores)
-            Y_components = Y_scores.shape[1]
-            Y_reconstructed = Y_scores @ self.Q[:, :Y_components].T
-            if self.scale_Y:
-                Y_reconstructed = Y_reconstructed * self.Y_std
-            if self.center_Y:
-                Y_reconstructed = Y_reconstructed + self.Y_mean
+        if U is not None:
+            Y_components = U.shape[1]
+            Y_reconstructed = U @ self.Q[:, :Y_components].T
+
+        X_reconstructed, Y_reconstructed = self._un_center_scale_X_Y(
+            X=X_reconstructed, Y=Y_reconstructed
+        )
 
         if X_reconstructed is not None and Y_reconstructed is not None:
             return X_reconstructed, Y_reconstructed
@@ -853,16 +1064,13 @@ class PLS(BaseEstimator):
         This method is used to perform cross-validation on the PLS model with different
         data splits and evaluate its performance using user-defined metrics.
         """
-        X = np.asarray(X, dtype=self.dtype)
-        Y = np.asarray(Y, dtype=self.dtype)
-        if Y.ndim == 1:
-            Y = Y.reshape(-1, 1)
+        X, Y, weights = self._get_input(copy=False, X=X, Y=Y, weights=weights)
 
         if weights is not None:
-            weights = np.asarray(weights, dtype=self.dtype)
-            weights = weights.squeeze()
-            if np.any(weights < 0):
-                raise ValueError("Weights must be non-negative.")
+            self._check_nonnegative_weights(weights=weights)
+            flattened_weights = weights.squeeze()
+        else:
+            flattened_weights = None
 
         folds_dict = self._init_folds_dict(folds)
         num_splits = len(folds_dict)
@@ -879,15 +1087,15 @@ class PLS(BaseEstimator):
             Y_train = Y[train_indices]
             X_val = X[val_indices]
             Y_val = Y[val_indices]
-            if weights is not None:
-                weights_train = weights[train_indices]
-                weights_val = weights[val_indices]
+            if flattened_weights is not None:
+                weights_train = flattened_weights[train_indices]
+                weights_val = flattened_weights[val_indices]
             else:
                 weights_train = None
                 weights_val = None
 
             if preprocessing_function is not None:
-                if weights is not None:
+                if flattened_weights is not None:
                     X_train, Y_train, X_val, Y_val = preprocessing_function(
                         X_train, Y_train, X_val, Y_val, weights_train, weights_val
                     )
@@ -898,7 +1106,7 @@ class PLS(BaseEstimator):
 
             self.fit(X_train, Y_train, A, weights_train)
             Y_pred = self.predict(X_val, n_components=None)
-            if weights is not None:
+            if flattened_weights is not None:
                 return metric_function(Y_val, Y_pred, weights_val)
             return metric_function(Y_val, Y_pred)
 

@@ -22,3 +22,6 @@ cvmatrix = ">=3.0.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+addopts = "--typeguard-packages=ikpls"

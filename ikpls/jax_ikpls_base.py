@@ -1,12 +1,16 @@
 """
-Implements an abstract class for partial least-squares regression using Improved Kernel
-PLS by Dayal and MacGregor.
+This file contains an abstract class for partial least-squares regression using
+Improved Kernel PLS by Dayal and MacGregor.
 
 Implementations of concrete classes exist for both Improved Kernel PLS Algorithm #1
 and Improved Kernel PLS Algorithm #2.
 
 For more details, refer to the paper:
 "Improved Kernel Partial Least Squares Regression" by Dayal and MacGregor.
+
+This file also contains the _R_Y_Mapping class which is a concrete Mapping to store the
+PLS weights matrix to compute scores U directly from original Y for different numbers
+of components.
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
@@ -16,7 +20,7 @@ import abc
 import warnings
 from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Self, Tuple, Union
 
 import jax
 import jax.experimental
@@ -327,7 +331,7 @@ class PLSBase(abc.ABC):
         weights: Optional[ArrayLike],
         scale_dof: int,
         avg_non_zero_weights: Optional[float],
-    ):
+    ) -> jax.Array:
         """
         Get the standard deviation of a matrix.
 
@@ -1007,7 +1011,7 @@ class PLSBase(abc.ABC):
     @abc.abstractmethod
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
-    ) -> None:
+    ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -1061,7 +1065,8 @@ class PLSBase(abc.ABC):
 
         Returns
         -------
-        None.
+        self : PLS
+            Fitted model.
 
         Raises
         ------
@@ -1080,6 +1085,7 @@ class PLSBase(abc.ABC):
         instead of storing them in the class instance.
         """
         self.fitted_ = True
+        return self
 
     @partial(jax.jit, static_argnums=(0, 3))
     def stateless_predict(
@@ -1197,7 +1203,6 @@ class PLSBase(abc.ABC):
             X, self.B, n_components, self.X_mean, self.X_std, self.Y_mean, self.Y_std
         )
 
-    @partial(jax.jit, static_argnums=(0, 3))
     def transform(
         self,
         X: Optional[ArrayLike] = None,
@@ -1333,25 +1338,25 @@ class PLSBase(abc.ABC):
 
     def inverse_transform(
         self,
-        X_scores: Optional[jax.Array] = None,
-        Y_scores: Optional[jax.Array] = None,
+        T: Optional[jax.Array] = None,
+        U: Optional[jax.Array] = None,
     ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], None]:
         """
         Reconstructs `X` and `Y` from their respective scores.
 
         Parameters
         ----------
-        X_scores : Array of shape (N, n_components) or (N, A) or None, optional, default=None
+        T : Array of shape (N, n_X_components) or (N, A) or None, optional, default=None
             Scores of predictor variables.
-        Y_scores : Array of shape (N, n_components) or (N, A) or None, optional, default=None
+        U : Array of shape (N, n_Y_components) or (N, A) or None, optional, default=None
             Scores of response variables.
 
         Returns
         -------
         X_reconstructed : Array of shape (N, K)
-            If `X_scores` is not None, returns the reconstructed `X`.
+            If `T` is not None, returns the reconstructed `X`.
         Y_reconstructed : Array of shape (N, M)
-            If `Y_scores` is not None, returns the reconstructed `Y`.
+            If `U` is not None, returns the reconstructed `Y`.
 
         Raises
         ------
@@ -1370,19 +1375,19 @@ class PLSBase(abc.ABC):
         X_reconstructed = None
         Y_reconstructed = None
 
-        if X_scores is not None:
-            X_scores = self._convert_input_to_array(X_scores)
-            X_components = X_scores.shape[1]
-            X_reconstructed = X_scores @ self.P[:, :X_components].T
+        if T is not None:
+            T = self._convert_input_to_array(T)
+            X_components = T.shape[1]
+            X_reconstructed = T @ self.P[:, :X_components].T
             if self.scale_X:
                 X_reconstructed = X_reconstructed * self.X_std
             if self.center_X:
                 X_reconstructed = X_reconstructed + self.X_mean
 
-        if Y_scores is not None:
-            Y_scores = self._convert_input_to_array(Y_scores)
-            Y_components = Y_scores.shape[1]
-            Y_reconstructed = Y_scores @ self.Q[:, :Y_components].T
+        if U is not None:
+            U = self._convert_input_to_array(U)
+            Y_components = U.shape[1]
+            Y_reconstructed = U @ self.Q[:, :Y_components].T
             if self.scale_Y:
                 Y_reconstructed = Y_reconstructed * self.Y_std
             if self.center_Y:

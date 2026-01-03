@@ -185,6 +185,8 @@ will find:
 -   [Weighted Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
 -   [Weighted cross-validation with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_numpy.py)
 -   [Weighted cross-validation with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_jax.py)
+-   [Fit, transform to score space, and inverse transform with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/transform_numpy.py)
+-   [Fit, transform to score space, and inverse transform with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/transform_jax.py)
 
 ## Changelog
    

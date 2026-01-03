@@ -11,7 +11,7 @@ E-mail: ocge@foss.dk
 """
 
 from functools import partial
-from typing import Optional, Tuple
+from typing import Optional, Self, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -146,7 +146,7 @@ class PLS(PLSBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _step_1(
-        self, X: jax.Array, Y: jax.Array, weights: jax.Array
+        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array]
     ) -> Tuple[jax.Array, jax.Array]:
         """
         Perform the first step of Improved Kernel PLS Algorithm #2.
@@ -306,7 +306,7 @@ class PLS(PLSBase):
 
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
-    ) -> None:
+    ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -369,7 +369,8 @@ class PLS(PLSBase):
 
         Returns
         -------
-        None.
+        self : PLS
+            Fitted model.
 
         Raises
         ------
@@ -416,6 +417,7 @@ class PLS(PLSBase):
         self.Q = Q.T
         self.R = R.T
         self.R_Y = _R_Y_Mapping(QT=Q)
+        return self
 
     @partial(jax.jit, static_argnums=(0, 3))
     def stateless_fit(
@@ -424,7 +426,17 @@ class PLS(PLSBase):
         Y: ArrayLike,
         A: int,
         weights: Optional[ArrayLike] = None,
-    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> Tuple[
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        Optional[jax.Array],
+        Optional[jax.Array],
+        Optional[jax.Array],
+        Optional[jax.Array],
+    ]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
         Returns the internal matrices instead of storing them in the class instance.
