@@ -90,6 +90,12 @@ class PLS(BaseEstimator):
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
+    copy : bool, default=True
+            Whether to copy `X` and `Y` in before potentially applying centering and
+            scaling. If True, then the data is copied before fitting. If False, and `dtype`
+            matches the type of `X` and `Y`, then centering and scaling is done inplace,
+            modifying both arrays.
+
     dtype : numpy.float, default=numpy.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
         precision than float64 will yield significantly worse results when using an
@@ -115,6 +121,7 @@ class PLS(BaseEstimator):
         scale_X: bool = True,
         scale_Y: bool = True,
         ddof: int = 1,
+        copy: bool = True,
         dtype: type[np.floating] = np.float64,
     ) -> None:
         self.algorithm = algorithm
@@ -123,6 +130,7 @@ class PLS(BaseEstimator):
         self.scale_X = scale_X
         self.scale_Y = scale_Y
         self.ddof = ddof
+        self.copy = copy
         self.dtype = dtype
         self.eps = np.finfo(dtype).eps
         self.name = f"Improved Kernel PLS Algorithm #{algorithm}"
@@ -193,7 +201,8 @@ class PLS(BaseEstimator):
 
     def _copy_arrays(
         self,
-        copy: bool,
+        copy_X: bool,
+        copy_Y: bool,
         X: Optional[npt.NDArray[np.floating]] = None,
         Y: Optional[npt.NDArray[np.floating]] = None,
     ) -> Tuple[Optional[npt.NDArray[np.floating]], Optional[npt.NDArray[np.floating]]]:
@@ -203,8 +212,12 @@ class PLS(BaseEstimator):
 
         Parameters
         ----------
-        copy: bool
-            Whether to copy arrays or not.
+        copy_X: bool
+            Whether to copy `X`.
+
+        copy_Y : bool
+            Whether to copy `Y`.
+
         X : Array of shape (N, K) or None
             Predictor variables.
 
@@ -215,17 +228,16 @@ class PLS(BaseEstimator):
         -------
         X_copy : Array of shape (N, K) or None
             A copy of `X` if it is provided and the following conditions are met:
-            `copy` is True, and `X` will be either centered or scaled.
+            `copy_X` is True, and `X` will be either centered or scaled.
 
         Y_copy : Array of shape (N, M) or None
             A copy of `Y` if it is provided and the following conditions are met:
-            `copy` is True, and `Y` will be either centered or scaled.
+            `copy_Y` is True, and `Y` will be either centered or scaled.
         """
-        if copy:
-            if X is not None and (self.center_X or self.scale_X):
-                X = X.copy()
-            if Y is not None and (self.center_Y or self.scale_Y):
-                Y = Y.copy()
+        if copy_X and X is not None and (self.center_X or self.scale_X):
+            X = X.copy()
+        if copy_Y and Y is not None and (self.center_Y or self.scale_Y):
+            Y = Y.copy()
         return X, Y
 
     def _get_input(
@@ -248,13 +260,15 @@ class PLS(BaseEstimator):
             Converted inputs for safe downstream processing.
         """
 
-        X = self._convert_input_to_array(arr=X)
-        Y = self._convert_input_to_array(arr=Y)
+        new_X = self._convert_input_to_array(arr=X)
+        new_Y = self._convert_input_to_array(arr=Y)
+        copy_X = copy and (np.may_share_memory(new_X, X))
+        copy_Y = copy and (np.may_share_memory(new_Y, Y))
         weights = self._convert_input_to_array(arr=weights)
         if weights is not None:
             self._check_nonnegative_weights(weights=weights)
-        X, Y = self._copy_arrays(copy=copy, X=X, Y=Y)
-        return X, Y, weights
+        new_X, new_Y = self._copy_arrays(copy_X=copy_X, copy_Y=copy_Y, X=new_X, Y=new_Y)
+        return new_X, new_Y, weights
 
     def _center_scale_X_Y(
         self,
@@ -351,7 +365,7 @@ class PLS(BaseEstimator):
             raise ValueError("Weights must be non-negative.")
 
     def _check_num_nonzero_weights_greater_than_ddof(
-        self, num_nonzero_weights: int
+        self, num_nonzero_weights: np.intp
     ) -> None:
         """
         Checks that the number of nonzero weights are greater than `self.ddof` if
@@ -431,9 +445,7 @@ class PLS(BaseEstimator):
         if weights is not None:
             flattened_weights = weights.flatten()
             if self.scale_X or self.scale_Y:
-                num_non_zero_weights = np.asarray(
-                    np.count_nonzero(weights), dtype=self.dtype
-                )
+                num_non_zero_weights = np.count_nonzero(weights)
                 self._check_num_nonzero_weights_greater_than_ddof(
                     num_nonzero_weights=num_non_zero_weights
                 )
@@ -492,7 +504,6 @@ class PLS(BaseEstimator):
         Y: npt.ArrayLike,
         A: int,
         weights: Optional[npt.ArrayLike] = None,
-        copy: bool = True,
     ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -511,12 +522,6 @@ class PLS(BaseEstimator):
         weights : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
-
-        copy : bool, default=True
-            Whether to copy `X` and `Y` in before potentially applying centering and
-            scaling. If True, then the data is copied before fitting. If False, and `dtype`
-            matches the type of `X` and `Y`, then centering and scaling is done inplace,
-            modifying both arrays.
 
         Attributes
         ----------
@@ -550,6 +555,9 @@ class PLS(BaseEstimator):
 
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
+            IMPORTANT: If weights are provided, these are NOT the scores of X but
+            instead weighted scores. In this case, scores can be computerd using
+            transform.
 
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None. If weights are
@@ -601,7 +609,7 @@ class PLS(BaseEstimator):
         is cached for fast future retrieval. R_Y is implemented as a concrete Mapping.
         """
         self.fitted_ = True
-        X, Y, weights = self._get_input(copy=copy, X=X, Y=Y, weights=weights)
+        X, Y, weights = self._get_input(copy=self.copy, X=X, Y=Y, weights=weights)
         self._compute_mean_and_std(X=X, Y=Y, weights=weights)
         X, Y = self._center_scale_X_Y(X=X, Y=Y)
 
@@ -757,7 +765,6 @@ class PLS(BaseEstimator):
         X: Optional[npt.ArrayLike] = None,
         Y: Optional[npt.ArrayLike] = None,
         n_components: Optional[int] = None,
-        copy: bool = True,
     ) -> Union[npt.ArrayLike, Tuple[npt.ArrayLike, npt.ArrayLike], None]:
         """
         Transforms `X` and `Y` to their respective scores using `n_components` components.
@@ -767,17 +774,13 @@ class PLS(BaseEstimator):
         ----------
         X : Array of shape (N, K) or None, optional, default=None
             Predictor variables.
+
         Y : Array of shape (N, M) or None, optional, default=None
             Response variables.
+
         n_components : int or None, optional, default=None.
             Number of components in the PLS model. If None, then scores for all
             components up to `A` are returned.
-
-        copy : bool, default=True
-            Whether to copy `X` and `Y` before potentially applying centering and
-            scaling. If True, then the data is copied beforehand. If False, and `dtype`
-            matches the type of `X` and `Y`, then centering and scaling is done inplace,
-            modifying both arrays.
 
         Returns
         -------
@@ -785,6 +788,7 @@ class PLS(BaseEstimator):
             X scores of `X`. If `n_components` is an int, then the scores up to
             `n_components` is used. If `n_components` is None, returns scores for all
             components up to `A`.
+
         U : Array of shape (N, n_components) or (N, A) or None
             Y scores of `Y`. If `n_components` is an int, then the scores up to
             `n_components` is used. If `n_components` is None, returns scores for all
@@ -815,7 +819,7 @@ class PLS(BaseEstimator):
             )
         if n_components is None:
             n_components = self.A
-        X, Y, _ = self._get_input(copy=copy, X=X, Y=Y)
+        X, Y, _ = self._get_input(copy=True, X=X, Y=Y)
         X, Y = self._center_scale_X_Y(X=X, Y=Y)
         if X is not None:
             T = X @ self.R[:, :n_components]
@@ -869,7 +873,7 @@ class PLS(BaseEstimator):
         inverse_transform : Reconstructs `X` and `Y` from their respective scores.
         """
         self.fit(X=X, Y=Y, A=A, weights=weights)
-        if self.algorithm == 1:
+        if self.algorithm == 1 and weights is None:
             return np.copy(self.T), self.transform(Y=Y)
         return self.transform(X=X, Y=Y)
 
@@ -996,7 +1000,7 @@ class PLS(BaseEstimator):
         weights: Optional[npt.ArrayLike] = None,
         n_jobs: int = -1,
         verbose: int = 10,
-    ) -> dict[str, Any]:
+    ) -> dict[Hashable, Any]:
         """
         Performs cross-validation for the Partial Least-Squares (PLS) model on given
         data. `preprocessing_function` will be applied before any potential centering
@@ -1135,11 +1139,11 @@ class PLS(BaseEstimator):
             validation indices.
         """
         index_dict = {}
-        for i, num in enumerate(folds):
+        for i, fold in enumerate(folds):
             try:
-                index_dict[num].append(i)
+                index_dict[fold].append(i)
             except KeyError:
-                index_dict[num] = [i]
-        for key in index_dict:
-            index_dict[key] = np.asarray(index_dict[key], dtype=int)
+                index_dict[fold] = [i]
+        for fold in index_dict:
+            index_dict[fold] = np.asarray(index_dict[fold], dtype=int)
         return index_dict

@@ -13,7 +13,7 @@ E-mail: ocge@foss.dk
 
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Literal, Optional
 
 import joblib
 import numpy as np
@@ -38,22 +38,22 @@ class PLS:
         is faster if `X` has less rows than columns, while Algorithm #2 is faster if
         `X` has more rows than columns.
 
-    center_X : bool, optional default=True
+    center_X : bool, default=True
         Whether to center `X` before fitting by subtracting its row of
         column-wise means from each row. The row of column-wise means is computed on
         the training set for each fold to avoid data leakage.
 
-    center_Y : bool, optional default=True
+    center_Y : bool, default=True
         Whether to center `Y` before fitting by subtracting its row of
         column-wise means from each row. The row of column-wise means is computed on
         the training set for each fold to avoid data leakage.
 
-    scale_X : bool, optional default=True
+    scale_X : bool, default=True
         Whether to scale `X` before fitting by dividing each row with the row of `X`'s
         column-wise standard deviations. The row of column-wise standard deviations is
         computed on the training set for each fold to avoid data leakage.
 
-    scale_Y : bool, optional default=True
+    scale_Y : bool, default=True
         Whether to scale `Y` before fitting by dividing each row with the row of `X`'s
         column-wise standard deviations. The row of column-wise standard deviations is
         computed on the training set for each fold to avoid data leakage.
@@ -64,10 +64,11 @@ class PLS:
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    dtype : numpy.float, default=numpy.float64
-        The float datatype to use in computation of the PLS algorithm. Using a lower
-        precision than float64 will yield significantly worse results when using an
-        increasing number of components due to propagation of numerical errors.
+    dtype : DTypeLike, default=numpy.float64
+        The float datatype to use in computation of the PLS algorithm. This should be
+        numpy.float32 or numpy.float64. Using a lower precision than float64 will yield
+        significantly worse results when using an increasing number of components due
+        to propagation of numerical errors.
 
     copy : bool, default=True
         Whether to copy `X`, `Y`, and `weights` when cross-validating. If True or the
@@ -101,7 +102,7 @@ class PLS:
         scale_Y: bool = True,
         ddof: int = 1,
         copy: bool = True,
-        dtype: np.floating = np.float64,
+        dtype: npt.DTypeLike = np.float64,
     ) -> None:
         self.algorithm = algorithm
         self.center_X = center_X
@@ -403,14 +404,17 @@ class PLS:
     def _stateless_fit_predict_eval(
         self,
         validation_indices: npt.NDArray[np.int_],
-        metric_function: Callable[
-            [
-                npt.NDArray[np.floating],
-                npt.NDArray[np.floating],
-                Optional[npt.NDArray[np.floating]],
-            ],
-            Any,
-        ],
+        metric_function: (
+            Callable[[npt.NDArray[np.floating], npt.NDArray[np.floating]], Any]
+            | Callable[
+                [
+                    npt.NDArray[np.floating],
+                    npt.NDArray[np.floating],
+                    npt.NDArray[np.floating],
+                ],
+                Any,
+            ]
+        ),
     ) -> Any:
         """
         Fits Improved Kernel PLS Algorithm #1 or #2 on `X` or `XTX`, `XTY` and `Y`
@@ -493,11 +497,11 @@ class PLS:
             Weights for each observation. If None, then all observations are weighted
             equally.
 
-        n_jobs : int, optional default=-1
+        n_jobs : int, default=-1
             Number of parallel jobs to use. A value of -1 will use the minimum of all
             available cores and the number of unique values in `folds`.
 
-        verbose : int, optional default=10
+        verbose : int, default=10
             Controls verbosity of parallel jobs.
 
         Returns
@@ -519,18 +523,18 @@ class PLS:
         same order.
         """
 
-        X = np.asarray(X, dtype=self.dtype)
-        Y = np.asarray(Y, dtype=self.dtype)
-        if Y.ndim == 1:
-            Y = Y.reshape(-1, 1)
-        if weights is not None:
-            weights = np.asarray(weights, dtype=self.dtype)
-            if weights.ndim == 1:
-                weights = weights.reshape(-1, 1)
-            if self.algorithm == 1:
-                self.sqrt_weights = np.sqrt(weights)
-        else:
-            self.sqrt_weights = None
+        # X = np.asarray(X, dtype=self.dtype)
+        # Y = np.asarray(Y, dtype=self.dtype)
+        # if Y.ndim == 1:
+        #     Y = Y.reshape(-1, 1)
+        # if weights is not None:
+        #     weights = np.asarray(weights, dtype=self.dtype)
+        #     if weights.ndim == 1:
+        #         weights = weights.reshape(-1, 1)
+        #     if self.algorithm == 1:
+        #         self.sqrt_weights = np.sqrt(weights)
+        # else:
+        #     self.sqrt_weights = None
 
         self.cvm = CVMatrix(
             center_X=self.center_X,
@@ -539,7 +543,7 @@ class PLS:
             scale_Y=self.scale_Y,
             ddof=self.ddof,
             dtype=self.dtype,
-            copy=False,
+            copy=self.copy,
         )
 
         # It is important that Partitioner is not made an attribute of this

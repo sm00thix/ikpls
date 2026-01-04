@@ -94,25 +94,26 @@ class PLSBase(abc.ABC):
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    copy : bool, optional, default=True
+    copy : bool, default=True
         Whether to copy `X` and `Y` in fit before potentially applying centering and
         scaling. If True, then the data is copied before fitting. If False, and `dtype`
         matches the type of `X` and `Y`, then centering and scaling is done inplace,
         modifying both arrays.
 
-    dtype : jnp.float, optional, default=jnp.float64
-        The float datatype to use in computation of the PLS algorithm. Using a lower
-        precision than float64 will yield significantly worse results when using an
-        increasing number of components due to propagation of numerical errors.
+    dtype : DTypeLike, default=jnp.float64
+        The float datatype to use in computation of the PLS algorithm. This should be
+        jax.numpy.float32 or jax.numpy.float64. Using a lower precision than float64
+        will yield significantly worse results when using an increasing number of
+        components due to propagation of numerical errors.
 
-    differentiable: bool, optional, default=False
+    differentiable: bool, default=False
         Whether to make the implementation end-to-end differentiable. The
         differentiable version is slightly slower. Results among the two versions are
         identical. If this is True, `fit` and `stateless_fit` will not issue a warning
         if the residual goes below machine epsilon, and `max_stable_components` will
         not be set.
 
-    verbose : bool, optional, default=False
+    verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
         different shapes.
@@ -164,7 +165,7 @@ class PLSBase(abc.ABC):
         if self.dtype == jnp.float64:
             jax.config.update("jax_enable_x64", True)
 
-    def _weight_warning(self, i: int):
+    def _weight_warning(self, i: DTypeLike):
         """
         Display a warning message if the weight is close to zero.
 
@@ -194,14 +195,14 @@ class PLSBase(abc.ABC):
             self.max_stable_components = int(i)
 
     @partial(jax.jit, static_argnums=0)
-    def _weight_warning_callback(self, i, norm):
+    def _weight_warning_callback(self, i: int, norm: DTypeLike):
         close_to_zero = jnp.isclose(norm, 0, atol=jnp.finfo(self.dtype).eps, rtol=0)
         return jax.lax.cond(
             close_to_zero,
-            lambda i: jax.experimental.io_callback(
-                self._weight_warning, None, i, ordered=True
+            lambda num_components: jax.experimental.io_callback(
+                self._weight_warning, None, num_components, ordered=True
             ),
-            lambda _i: None,
+            lambda _num_components: None,
             i,
         )
 
@@ -238,7 +239,7 @@ class PLSBase(abc.ABC):
         return b
 
     @partial(jax.jit, static_argnums=0)
-    def _convert_input_to_array(self, arr: jax.Array) -> jax.Array:
+    def _convert_input_to_array(self, arr: ArrayLike) -> jax.Array:
         """
         Converts input array to numpy array of type self.dtype. Inserts a second axis
         if the input array is 1-dimensional.
@@ -260,7 +261,7 @@ class PLSBase(abc.ABC):
 
     @partial(jax.jit, static_argnums=0)
     def _initialize_input_matrices(
-        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array] = None
+        self, X: ArrayLike, Y: ArrayLike, weights: Optional[ArrayLike] = None
     ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
         """
         Initialize the input matrices used in the PLS algorithm.
@@ -298,7 +299,7 @@ class PLSBase(abc.ABC):
         return X, Y, weights
 
     @partial(jax.jit, static_argnums=0)
-    def get_mean(self, A: ArrayLike, weights: Optional[ArrayLike] = None):
+    def _get_mean(self, A: ArrayLike, weights: Optional[ArrayLike] = None):
         """
         Get the mean of the a matrix.
 
@@ -324,13 +325,13 @@ class PLSBase(abc.ABC):
         return A_mean
 
     @partial(jax.jit, static_argnums=0)
-    def get_std(
+    def _get_std(
         self,
         A: ArrayLike,
         mean: ArrayLike,
         weights: Optional[ArrayLike],
-        scale_dof: int,
-        avg_non_zero_weights: Optional[float],
+        scale_dof: DTypeLike,
+        avg_non_zero_weights: Optional[DTypeLike],
     ) -> jax.Array:
         """
         Get the standard deviation of a matrix.
@@ -376,7 +377,7 @@ class PLSBase(abc.ABC):
                 )
                 / (scale_dof * avg_non_zero_weights)
             )
-        A_std = jnp.where(jnp.abs(A_std) <= self.eps, 1, A_std)
+        A_std = jnp.where(A_std <= self.eps, 1, A_std)
         return A_std
 
     @partial(jax.jit, static_argnums=0)
@@ -419,13 +420,13 @@ class PLSBase(abc.ABC):
             Y = Y.copy()
 
         if self.center_X:
-            X_mean = self.get_mean(X, weights)
+            X_mean = self._get_mean(X, weights)
             X = X - X_mean
         else:
             X_mean = None
 
         if self.center_Y:
-            Y_mean = self.get_mean(Y, weights)
+            Y_mean = self._get_mean(Y, weights)
             Y = Y - Y_mean
         else:
             Y_mean = None
@@ -442,8 +443,8 @@ class PLSBase(abc.ABC):
                 scale_dof = X.shape[0] - self.ddof
 
         if self.scale_X:
-            new_X_mean = 0 if self.center_X else self.get_mean(X, weights)
-            X_std = self.get_std(
+            new_X_mean = 0 if self.center_X else self._get_mean(X, weights)
+            X_std = self._get_std(
                 X, new_X_mean, weights, scale_dof, avg_non_zero_weights
             )
             X = X / X_std
@@ -451,8 +452,8 @@ class PLSBase(abc.ABC):
             X_std = None
 
         if self.scale_Y:
-            new_Y_mean = 0 if self.center_Y else self.get_mean(Y, weights)
-            Y_std = self.get_std(
+            new_Y_mean = 0 if self.center_Y else self._get_mean(Y, weights)
+            Y_std = self._get_std(
                 Y, new_Y_mean, weights, scale_dof, avg_non_zero_weights
             )
             Y = Y / Y_std
@@ -1062,6 +1063,9 @@ class PLSBase(abc.ABC):
 
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
+            IMPORTANT: If weights are provided, these are NOT the scores of X but
+            instead weighted scores. In this case, scores can be computerd using
+            transform.
 
         Returns
         -------
@@ -1332,14 +1336,14 @@ class PLSBase(abc.ABC):
         inverse_transform : Reconstructs `X` and `Y` from their respective scores.
         """
         self.fit(X=X, Y=Y, A=A, weights=weights)
-        if self.T is not None:
+        if self.T is not None and weights is None:
             return jnp.copy(self.T), self.transform(Y=Y)
         return self.transform(X=X, Y=Y)
 
     def inverse_transform(
         self,
-        T: Optional[jax.Array] = None,
-        U: Optional[jax.Array] = None,
+        T: Optional[ArrayLike] = None,
+        U: Optional[ArrayLike] = None,
     ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], None]:
         """
         Reconstructs `X` and `Y` from their respective scores.
@@ -1596,7 +1600,7 @@ class PLSBase(abc.ABC):
             `weights_train`, and `weights_val`, and returning a Tuple of preprocessed
             `X_train`, `Y_train`, `X_val`, and `Y_val`.
 
-        show_progress : bool, optional, default=True
+        show_progress : bool, default=True
             If True, displays a progress bar for the cross-validation.
 
         weights : Array of shape (N,) or None, optional, default=None

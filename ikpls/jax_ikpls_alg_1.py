@@ -50,25 +50,25 @@ class PLS(PLSBase):
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    copy : bool, optional, default=True
+    copy : bool, default=True
         Whether to copy `X` and `Y` in fit before potentially applying centering and
         scaling. If True, then the data is copied before fitting. If False, and `dtype`
         matches the type of `X` and `Y`, then centering and scaling is done inplace,
         modifying both arrays.
 
-    dtype : DTypeLike, optional, default=jnp.float64
+    dtype : DTypeLike, default=jnp.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
 
-    differentiable: bool, optional, default=False
+    differentiable: bool, default=False
         Whether to make the implementation end-to-end differentiable. The
         differentiable version is slightly slower. Results among the two versions are
         identical. If this is True, `fit` and `stateless_fit` will not issue a warning
         if the residual goes below machine epsilon, and `max_stable_components` will
         not be set.
 
-    verbose : bool, optional, default=False
+    verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
         different shapes.
@@ -400,7 +400,9 @@ class PLS(PLSBase):
             PLS weights matrix to compute scores T directly from original X.
 
         T : Array of shape (N, A)
-            PLS scores matrix of X.
+            PLS scores matrix of X. IMPORTANT: If weights are provided, these are NOT
+            the scores of X but instead weighted scores. In this case, scores can be
+            computerd using transform.
 
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None. If weights are
@@ -529,7 +531,9 @@ class PLS(PLSBase):
             PLS weights matrix to compute scores T directly from original X.
 
         T : Array of shape (A, N)
-            PLS scores matrix of X.
+            PLS scores matrix of X. IMPORTANT: If weights are provided, these are NOT
+            the scores of X but instead weighted scores. In this case, scores can be
+            computerd using transform.
 
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None. If weights are

@@ -66,7 +66,7 @@ The JAX implementations support running on both CPU, GPU, and TPU.
 
 - To enable NVIDIA GPU execution, install JAX and CUDA with:
     ```shell
-    pip3 install -U "jax[cuda12]"
+    pip3 install -U "jax[cuda13]"
     ```
 
 - To enable Google Cloud TPU execution, install JAX with:

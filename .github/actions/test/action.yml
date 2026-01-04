@@ -31,5 +31,5 @@ runs:
 
     - name: Run tests
       run: |
-        poetry run pytest tests
+        poetry run pytest --typeguard-packages=ikpls tests
       shell: bash

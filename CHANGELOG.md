@@ -5,16 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [3.1.0]
 ### Added
+- `R_Y` attribute with Y rotations for all PLS implementations except fast cross-validation. `R_Y` is set and reset by fit but not computed until accessed at which point it is cached for future access. `R_Y` is a concrete Mapping accessing the Y rotations for a number of components, nc, is done by `R_Y[nc]` which returns an array of shape `(M, nc)`. Using `R_Y[A][:, :nc]` is generally NOT equivalent to `R_Y[nc]`. Here `M` is the number of columns in `Y`, and `A` is the maximum number of components that the PLS model was fitted with.
 - A `transform` method for all implementations that transforms $\mathbf{X}$ and/or $\mathbf{Y}$ to score space.
 - An `inverse_transform` method for all implementations that reconstructs $\mathbf{X}$ and/or $\mathbf{Y}$ from score space to original space.
 - A `fit_transform` method for all implementations that first calls `fit` and then `transform`.
-- Tests covering `transform`, `inverse_transform`, and `fit_transform`. // TODO: Add this.
-- Examples covering `transform`, `inverse_transform`, and `fit_transform`. // TODO: Add this.
-- Downloading the JAX dependencies is now optional and the default download does not include this. // TODO: Add this. And update README.md with new installation instructions.
 
 ## [3.0.0] - 2025-07-11
 
@@ -61,8 +57,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 1. Dayal, B. S. and MacGregor, J. F. (1997). Improved PLS algorithms. *Journal of Chemometrics*, 11(1), 73-85.
 2. Engstrøm, O.-C. G. and Jensen, M. H. (2025). Fast Partition-Based Cross-Validation With Centering and Scaling for $\mathbf{X}^\mathbf{T}\mathbf{X}$ and $\mathbf{X}^\mathbf{T}\mathbf{Y}$
 3. CVMatrix. Fast computation of possibly weighted and possibly centered/scaled training set kernel matrices in a cross-validation setting.
-
-[Unreleased]: https://github.com/sm00thix/ikpls/compare/v3.0.0.post1...HEAD
-[3.0.0]: https://github.com/sm00thix/ikpls/releases/tag/v3.0.0.post1
-[2.0.0]: https://github.com/sm00thix/ikpls/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/sm00thix/ikpls/releases/tag/v1.0.0
