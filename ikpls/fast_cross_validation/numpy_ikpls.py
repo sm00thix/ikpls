@@ -13,7 +13,7 @@ E-mail: ocge@foss.dk
 
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Optional
 
 import joblib
 import numpy as np
@@ -64,7 +64,7 @@ class PLS:
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    dtype : DTypeLike, default=numpy.float64
+    dtype : type[np.floating], default=numpy.float64
         The float datatype to use in computation of the PLS algorithm. This should be
         numpy.float32 or numpy.float64. Using a lower precision than float64 will yield
         significantly worse results when using an increasing number of components due
@@ -102,7 +102,7 @@ class PLS:
         scale_Y: bool = True,
         ddof: int = 1,
         copy: bool = True,
-        dtype: npt.DTypeLike = np.float64,
+        dtype: type[np.floating] = np.float64,
     ) -> None:
         self.algorithm = algorithm
         self.center_X = center_X

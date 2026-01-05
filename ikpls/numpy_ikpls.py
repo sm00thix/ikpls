@@ -14,6 +14,7 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
+import platform
 import warnings
 from collections.abc import Callable, Hashable, Mapping
 from typing import Any, Iterable, Optional, Self, Tuple, Union
@@ -35,6 +36,7 @@ class _R_Y_Mapping(Mapping):
         self.eps = np.finfo(Q.dtype).eps
         self._valid_keys = set(range(1, Q.shape[1] + 1))
         self._cache = {}
+        self.upcast = platform.system() == "Darwin" and Q.dtype == np.float32
 
     def __getitem__(self, key):
         if key not in self._valid_keys:
@@ -42,7 +44,12 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
+            if self.upcast:
+                self._cache[key] = la.pinv(
+                    self.Q[:, :key].T.astype(np.float64), rcond=self.eps
+                ).astype(self.Q.dtype)
+            else:
+                self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
         return self._cache[key]
 
     def __iter__(self):
@@ -97,10 +104,11 @@ class PLS(BaseEstimator):
             matches the type of `X` and `Y`, then centering and scaling is done inplace,
             modifying both arrays.
 
-    dtype : numpy.float, default=numpy.float64
-        The float datatype to use in computation of the PLS algorithm. Using a lower
-        precision than float64 will yield significantly worse results when using an
-        increasing number of components due to propagation of numerical errors.
+    dtype : type[np.floating], default=numpy.float64
+        The float datatype to use in computation of the PLS algorithm. This should be
+        numpy.float32 or numpy.float64. Using a lower precision than float64
+        will yield significantly worse results when using an increasing number of
+        components due to propagation of numerical errors.
 
     Raises
     ------
