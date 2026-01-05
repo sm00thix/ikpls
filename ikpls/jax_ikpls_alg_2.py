@@ -11,13 +11,13 @@ E-mail: ocge@foss.dk
 """
 
 from functools import partial
-from typing import Optional, Tuple
+from typing import Optional, Self, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike, DTypeLike
 
-from ikpls.jax_ikpls_base import PLSBase
+from ikpls.jax_ikpls_base import PLSBase, _R_Y_Mapping
 
 
 class PLS(PLSBase):
@@ -50,25 +50,25 @@ class PLS(PLSBase):
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    copy : bool, optional, default=True
+    copy : bool, default=True
         Whether to copy `X` and `Y` in fit before potentially applying centering and
         scaling. If True, then the data is copied before fitting. If False, and `dtype`
         matches the type of `X` and `Y`, then centering and scaling is done inplace,
         modifying both arrays.
 
-    dtype : DTypeLike, optional, default=jnp.float64
+    dtype : DTypeLike, default=jnp.float64
         The float datatype to use in computation of the PLS algorithm. Using a lower
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
 
-    differentiable: bool, optional, default=False
+    differentiable: bool, default=False
         Whether to make the implementation end-to-end differentiable. The
         differentiable version is slightly slower. Results among the two versions are
         identical. If this is True, `fit` and `stateless_fit` will not issue a warning
         if the residual goes below machine epsilon, and `max_stable_components` will
         not be set.
 
-    verbose : bool, optional, default=False
+    verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
         different shapes.
@@ -146,7 +146,7 @@ class PLS(PLSBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _step_1(
-        self, X: jax.Array, Y: jax.Array, weights: jax.Array
+        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array]
     ) -> Tuple[jax.Array, jax.Array]:
         """
         Perform the first step of Improved Kernel PLS Algorithm #2.
@@ -181,9 +181,17 @@ class PLS(PLSBase):
         XTY = self._compute_initial_XTY(XT, Y)
         return XTX, XTY
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0, 4, 5))
     def _step_4(
-        self, XTX: jax.Array, XTY: jax.Array, r: jax.Array
+        self,
+        XTX: jax.Array,
+        XTY: jax.Array,
+        r: jax.Array,
+        M: int,
+        K: int,
+        norm: DTypeLike,
+        q: Optional[jax.Array] = None,
+        largest_eigval: Optional[jax.Array] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """
         Perform the fourth step of Improved Kernel PLS Algorithm #2.
@@ -215,7 +223,7 @@ class PLS(PLSBase):
         rXTX = r.T @ XTX
         tTt = rXTX @ r
         p = rXTX.T / tTt
-        q = (r.T @ XTY).T / tTt
+        q = self._step_4_compute_q(r, XTY, tTt, M, K, norm, q, largest_eigval)
         return tTt, p, q
 
     @partial(jax.jit, static_argnums=(0, 1, 5, 6))
@@ -280,7 +288,9 @@ class PLS(PLSBase):
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_main_loop_body for {self.name} will be JIT compiled...")
         # step 2
-        w, norm = self._step_2(XTY, M, K)
+        step_2_res = self._step_2(XTY, M, K)
+        w = step_2_res[0]
+        norm = step_2_res[1]
         if not self.differentiable:
             self._weight_warning_callback(i, norm)
         # step 3
@@ -289,14 +299,14 @@ class PLS(PLSBase):
         else:
             r = self._step_3(i, w, P, R)
         # step 4
-        tTt, p, q = self._step_4(XTX, XTY, r)
+        tTt, p, q = self._step_4(XTX, XTY, r, M, K, *step_2_res[1:])
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
         return XTY, w, p, q, r
 
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
-    ) -> None:
+    ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -339,6 +349,12 @@ class PLS(PLSBase):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
+        R_Y : Mapping[int, Array]
+            Mapping from number of components to PLS weights matrix to compute scores U
+            directly from original Y. Keys range from 1 to A. Values are arrays of
+            shape (M, n_components) where n_components is the key. Values are computed
+            lazily and cached upon first access. See Notes for more information.
+
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None.
 
@@ -353,7 +369,8 @@ class PLS(PLSBase):
 
         Returns
         -------
-        None.
+        self : PLS
+            Fitted model.
 
         Raises
         ------
@@ -371,7 +388,16 @@ class PLS(PLSBase):
         stateless_fit : Performs the same operation but returns the output matrices
         instead of storing them in the class instance. stateless_fit does not raise an
         error if `weights` are provided and not all weights are non-negative.
+
+        Notes
+        -----
+        `R_Y` is provided for convenience only as it is not required to derive `B`.
+        Therefore, every value in `R_Y` is computed lazily and only actually evaluated
+        when accessed by its key for the first time after a call to `fit` - either by
+        the user or because it is needed by `transform`. After a value is computed, it
+        is cached for fast future retrieval. R_Y is implemented as a concrete Mapping.
         """
+        super().fit(X, Y, A, weights)
         if weights is not None:
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
@@ -390,6 +416,8 @@ class PLS(PLSBase):
         self.P = P.T
         self.Q = Q.T
         self.R = R.T
+        self.R_Y = _R_Y_Mapping(QT=Q)
+        return self
 
     @partial(jax.jit, static_argnums=(0, 3))
     def stateless_fit(
@@ -398,7 +426,17 @@ class PLS(PLSBase):
         Y: ArrayLike,
         A: int,
         weights: Optional[ArrayLike] = None,
-    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> Tuple[
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        Optional[jax.Array],
+        Optional[jax.Array],
+        Optional[jax.Array],
+        Optional[jax.Array],
+    ]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
         Returns the internal matrices instead of storing them in the class instance.

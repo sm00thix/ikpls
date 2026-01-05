@@ -19,7 +19,6 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
-
 import io
 from urllib.request import urlopen
 

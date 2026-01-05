@@ -1,6 +1,6 @@
 """
-Implements an abstract class for partial least-squares regression using Improved Kernel
-PLS by Dayal and MacGregor.
+This file contains an abstract class for partial least-squares regression using
+Improved Kernel PLS by Dayal and MacGregor.
 
 Implementations of concrete classes exist for both Improved Kernel PLS Algorithm #1
 and Improved Kernel PLS Algorithm #2.
@@ -8,24 +8,58 @@ and Improved Kernel PLS Algorithm #2.
 For more details, refer to the paper:
 "Improved Kernel Partial Least Squares Regression" by Dayal and MacGregor.
 
+This file also contains the _R_Y_Mapping class which is a concrete Mapping to store the
+PLS weights matrix to compute scores U directly from original Y for different numbers
+of components.
+
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
 import abc
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Self, Tuple, Union
 
 import jax
 import jax.experimental
 import jax.numpy as jnp
 import jax.numpy.linalg as jla
-import numpy as np
 from jax.typing import ArrayLike, DTypeLike
-from numpy import typing as npt
+from sklearn.exceptions import NotFittedError
 from tqdm import tqdm
+
+
+class _R_Y_Mapping(Mapping):
+    """A read-only Mapping that computes values lazily on first access."""
+
+    def __init__(self, QT: jax.Array) -> None:
+        self.QT = QT
+        self.eps = jnp.finfo(QT.dtype).eps
+        self._valid_keys = set(range(1, QT.shape[0] + 1))
+        self._cache = {}
+
+    def __getitem__(self, key):
+        if key not in self._valid_keys:
+            raise KeyError(
+                f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.QT.shape[0]}."
+            )
+        if key not in self._cache:
+            self._cache[key] = jla.pinv(self.QT[:key], rcond=self.eps)
+        return self._cache[key]
+
+    def __iter__(self):
+        return iter(self._valid_keys)
+
+    def __len__(self):
+        return len(self._valid_keys)
+
+    def __contains__(self, key):
+        return key in self._valid_keys
+
+    def __repr__(self):
+        return f"_R_Y_Mapping(Cached R_Y for {len(self._cache)}/{len(self._valid_keys)} n_components)"
 
 
 class PLSBase(abc.ABC):
@@ -61,25 +95,26 @@ class PLSBase(abc.ABC):
         standard deviation, while a value of 1 corresponds to Bessel's correction for
         the sample standard deviation.
 
-    copy : bool, optional, default=True
+    copy : bool, default=True
         Whether to copy `X` and `Y` in fit before potentially applying centering and
         scaling. If True, then the data is copied before fitting. If False, and `dtype`
         matches the type of `X` and `Y`, then centering and scaling is done inplace,
         modifying both arrays.
 
-    dtype : jnp.float, optional, default=jnp.float64
-        The float datatype to use in computation of the PLS algorithm. Using a lower
-        precision than float64 will yield significantly worse results when using an
-        increasing number of components due to propagation of numerical errors.
+    dtype : DTypeLike, default=jnp.float64
+        The float datatype to use in computation of the PLS algorithm. This should be
+        jax.numpy.float32 or jax.numpy.float64. Using a lower precision than float64
+        will yield significantly worse results when using an increasing number of
+        components due to propagation of numerical errors.
 
-    differentiable: bool, optional, default=False
+    differentiable: bool, default=False
         Whether to make the implementation end-to-end differentiable. The
         differentiable version is slightly slower. Results among the two versions are
         identical. If this is True, `fit` and `stateless_fit` will not issue a warning
         if the residual goes below machine epsilon, and `max_stable_components` will
         not be set.
 
-    verbose : bool, optional, default=False
+    verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
         different shapes.
@@ -120,15 +155,18 @@ class PLSBase(abc.ABC):
         self.P = None
         self.Q = None
         self.R = None
+        self.R_Y = None
+        self.T = None
         self.X_mean = None
         self.Y_mean = None
         self.X_std = None
         self.Y_std = None
         self.max_stable_components = None
+        self.fitted_ = False
         if self.dtype == jnp.float64:
             jax.config.update("jax_enable_x64", True)
 
-    def _weight_warning(self, i: npt.NDArray[np.int_]):
+    def _weight_warning(self, i: DTypeLike):
         """
         Display a warning message if the weight is close to zero.
 
@@ -158,14 +196,14 @@ class PLSBase(abc.ABC):
             self.max_stable_components = int(i)
 
     @partial(jax.jit, static_argnums=0)
-    def _weight_warning_callback(self, i, norm):
+    def _weight_warning_callback(self, i: int, norm: DTypeLike):
         close_to_zero = jnp.isclose(norm, 0, atol=jnp.finfo(self.dtype).eps, rtol=0)
         return jax.lax.cond(
             close_to_zero,
-            lambda i: jax.experimental.io_callback(
-                self._weight_warning, None, i, ordered=True
+            lambda num_components: jax.experimental.io_callback(
+                self._weight_warning, None, num_components, ordered=True
             ),
-            lambda _i: None,
+            lambda _num_components: None,
             i,
         )
 
@@ -202,8 +240,29 @@ class PLSBase(abc.ABC):
         return b
 
     @partial(jax.jit, static_argnums=0)
+    def _convert_input_to_array(self, arr: ArrayLike) -> jax.Array:
+        """
+        Converts input array to numpy array of type self.dtype. Inserts a second axis
+        if the input array is 1-dimensional.
+
+        Parameters
+        ----------
+        arr : ArrayLike
+            Input array.
+
+        Returns
+        -------
+        array_converted : Array of shape of input array
+            Converted input array.
+        """
+        arr = jnp.asarray(arr, dtype=self.dtype)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        return arr
+
+    @partial(jax.jit, static_argnums=0)
     def _initialize_input_matrices(
-        self, X: jax.Array, Y: jax.Array, weights: Optional[jax.Array] = None
+        self, X: ArrayLike, Y: ArrayLike, weights: Optional[ArrayLike] = None
     ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
         """
         Initialize the input matrices used in the PLS algorithm.
@@ -232,11 +291,8 @@ class PLSBase(abc.ABC):
             Weights for each observation, converted to the specified dtype. If None,
             then all observations are weighted equally.
         """
-        X = jnp.asarray(X, dtype=self.dtype)
-        Y = jnp.asarray(Y, dtype=self.dtype)
-
-        if Y.ndim == 1:
-            Y = Y.reshape(-1, 1)
+        X = self._convert_input_to_array(X)
+        Y = self._convert_input_to_array(Y)
 
         if weights is not None:
             weights = jnp.asarray(weights, dtype=self.dtype)
@@ -244,7 +300,7 @@ class PLSBase(abc.ABC):
         return X, Y, weights
 
     @partial(jax.jit, static_argnums=0)
-    def get_mean(self, A: ArrayLike, weights: Optional[ArrayLike] = None):
+    def _get_mean(self, A: ArrayLike, weights: Optional[ArrayLike] = None):
         """
         Get the mean of the a matrix.
 
@@ -270,14 +326,14 @@ class PLSBase(abc.ABC):
         return A_mean
 
     @partial(jax.jit, static_argnums=0)
-    def get_std(
+    def _get_std(
         self,
         A: ArrayLike,
         mean: ArrayLike,
         weights: Optional[ArrayLike],
-        scale_dof: int,
-        avg_non_zero_weights: Optional[float],
-    ):
+        scale_dof: DTypeLike,
+        avg_non_zero_weights: Optional[DTypeLike],
+    ) -> jax.Array:
         """
         Get the standard deviation of a matrix.
 
@@ -322,7 +378,7 @@ class PLSBase(abc.ABC):
                 )
                 / (scale_dof * avg_non_zero_weights)
             )
-        A_std = jnp.where(jnp.abs(A_std) <= self.eps, 1, A_std)
+        A_std = jnp.where(A_std <= self.eps, 1, A_std)
         return A_std
 
     @partial(jax.jit, static_argnums=0)
@@ -365,13 +421,13 @@ class PLSBase(abc.ABC):
             Y = Y.copy()
 
         if self.center_X:
-            X_mean = self.get_mean(X, weights)
+            X_mean = self._get_mean(X, weights)
             X = X - X_mean
         else:
             X_mean = None
 
         if self.center_Y:
-            Y_mean = self.get_mean(Y, weights)
+            Y_mean = self._get_mean(Y, weights)
             Y = Y - Y_mean
         else:
             Y_mean = None
@@ -388,8 +444,8 @@ class PLSBase(abc.ABC):
                 scale_dof = X.shape[0] - self.ddof
 
         if self.scale_X:
-            new_X_mean = 0 if self.center_X else self.get_mean(X, weights)
-            X_std = self.get_std(
+            new_X_mean = 0 if self.center_X else self._get_mean(X, weights)
+            X_std = self._get_std(
                 X, new_X_mean, weights, scale_dof, avg_non_zero_weights
             )
             X = X / X_std
@@ -397,8 +453,8 @@ class PLSBase(abc.ABC):
             X_std = None
 
         if self.scale_Y:
-            new_Y_mean = 0 if self.center_Y else self.get_mean(Y, weights)
-            Y_std = self.get_std(
+            new_Y_mean = 0 if self.center_Y else self._get_mean(Y, weights)
+            Y_std = self._get_std(
                 Y, new_Y_mean, weights, scale_dof, avg_non_zero_weights
             )
             Y = Y / Y_std
@@ -582,7 +638,11 @@ class PLSBase(abc.ABC):
         """
 
     @partial(jax.jit, static_argnums=(0, 2, 3))
-    def _step_2(self, XTY: jax.Array, M: int, K: int) -> Tuple[jax.Array, DTypeLike]:
+    def _step_2(
+        self, XTY: jax.Array, M: int, K: int
+    ) -> (
+        Tuple[jax.Array, DTypeLike] | Tuple[jax.Array, DTypeLike, jax.Array, jax.Array]
+    ):
         """
         The second step of the PLS algorithm. Computes the next weight vector and the
         associated norm.
@@ -617,20 +677,20 @@ class PLSBase(abc.ABC):
         if M == 1:
             norm = jla.norm(XTY)
             w = XTY / norm
+        elif M < K:
+            XTYTXTY = XTY.T @ XTY
+            eig_vals, eig_vecs = jla.eigh(XTYTXTY)
+            q = eig_vecs[:, -1:]
+            q = q.reshape(-1, 1)
+            w = XTY @ q
+            norm = jla.norm(w)
+            w = w / norm
+            return w, norm, q, eig_vals[-1]
         else:
-            if M < K:
-                XTYTXTY = XTY.T @ XTY
-                eig_vals, eig_vecs = jla.eigh(XTYTXTY)
-                q = eig_vecs[:, -1:]
-                q = q.reshape(-1, 1)
-                w = XTY @ q
-                norm = jla.norm(w)
-                w = w / norm
-            else:
-                XTYYTX = XTY @ XTY.T
-                eig_vals, eig_vecs = jla.eigh(XTYYTX)
-                w = eig_vecs[:, -1:]
-                norm = eig_vals[-1]
+            XTYYTX = XTY @ XTY.T
+            eig_vals, eig_vecs = jla.eigh(XTYYTX)
+            w = eig_vecs[:, -1:]
+            norm = eig_vals[-1]
         return w, norm
 
     def _step_3_base(
@@ -765,6 +825,74 @@ class PLSBase(abc.ABC):
         implemented in concrete PLS classes.
         """
 
+    @partial(jax.jit, static_argnums=(0, 4, 5))
+    def _step_4_compute_q(
+        self,
+        r: jax.Array,
+        XTY: jax.Array,
+        tTt: jax.Array,
+        M: int,
+        K: int,
+        # step_2_res: Tuple[jax.Array, DTypeLike]
+        # | Tuple[jax.Array, DTypeLike, jax.Array],
+        norm: DTypeLike,
+        q: Optional[jax.Array] = None,
+        largest_eigval: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        """
+        Selects the appropriate branch function for step 4 based on the number of
+        response and predictor variables.
+
+        Parameters
+        ----------
+        M : int
+            Number of response variables.
+
+        K : int
+            Number of predictor variables.
+
+        Returns
+        -------
+        branch_function : Callable[..., jax.Array]
+            The selected branch function for step 4.
+
+        Notes
+        -----
+        This method selects the appropriate branch function for step 4 of the PLS
+        algorithm based on the number of response and predictor variables.
+        """
+        # return self._step_4_compute_q_branch_3(r=r, XTY=XTY, tTt=tTt)
+        if M == 1:
+            return self._step_4_compute_q_branch_1(norm=norm, tTt=tTt)
+        elif M < K:
+            return self._step_4_compute_q_branch_2(
+                q=q, largest_eigval=largest_eigval, tTt=tTt
+            )
+        else:
+            return self._step_4_compute_q_branch_3(r=r, XTY=XTY, tTt=tTt)
+
+    @partial(jax.jit, static_argnums=0)
+    def _step_4_compute_q_branch_1(self, norm: jax.Array, tTt: jax.Array) -> jax.Array:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_step_4_helper_branch_1 for {self.name} will be JIT compiled...")
+        return norm / tTt
+
+    @partial(jax.jit, static_argnums=0)
+    def _step_4_compute_q_branch_2(
+        self, q: jax.Array, largest_eigval: jax.Array, tTt: jax.Array
+    ) -> jax.Array:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_step_4_helper_branch_2 for {self.name} will be JIT compiled...")
+        return q * jnp.sqrt(largest_eigval) / tTt
+
+    @partial(jax.jit, static_argnums=0)
+    def _step_4_compute_q_branch_3(
+        self, r: jax.Array, XTY: jax.Array, tTt: jax.Array
+    ) -> jax.Array:
+        if self.verbose and not jax.config.values["jax_disable_jit"]:
+            print(f"_step_4_helper_branch_3 for {self.name} will be JIT compiled...")
+        return (r.T @ XTY).T / tTt
+
     @partial(jax.jit, static_argnums=0)
     def _step_5(
         self, XTY: jax.Array, p: jax.Array, q: jax.Array, tTt: jax.Array
@@ -842,6 +970,12 @@ class PLSBase(abc.ABC):
         R : Array of shape (A, K)
             PLS weights matrix to compute scores T directly from original X.
 
+        R_Y : Mapping[int, Array]
+            Mapping from number of components to PLS weights matrix to compute scores U
+            directly from original Y. Keys range from 1 to A. Values are arrays of
+            shape (M, n_components) where n_components is the key. Values are computed
+            lazily and cached upon first access. See Notes for more information.
+
         T : Array of shape (A, N)
             PLS scores matrix of X. Only Returned for Improved Kernel PLS Algorithm #1.
 
@@ -879,7 +1013,7 @@ class PLSBase(abc.ABC):
     @abc.abstractmethod
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
-    ) -> None:
+    ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
@@ -922,12 +1056,22 @@ class PLSBase(abc.ABC):
         R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
+        R_Y : Mapping[int, Array]
+            Mapping from number of components to PLS weights matrix to compute scores U
+            directly from original Y. Keys range from 1 to A. Values are arrays of
+            shape (M, n_components) where n_components is the key. Values are computed
+            lazily and cached upon first access. See Notes for more information.
+
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
+            IMPORTANT: If weights are provided, these are NOT the scores of X but
+            instead weighted scores. In this case, scores can be computerd using
+            transform.
 
         Returns
         -------
-        None.
+        self : PLS
+            Fitted model.
 
         Raises
         ------
@@ -945,6 +1089,8 @@ class PLSBase(abc.ABC):
         stateless_fit : Performs the same operation but returns the output matrices
         instead of storing them in the class instance.
         """
+        self.fitted_ = True
+        return self
 
     @partial(jax.jit, static_argnums=(0, 3))
     def stateless_predict(
@@ -1024,6 +1170,7 @@ class PLSBase(abc.ABC):
             Y_pred = Y_pred + Y_mean
         return Y_pred
 
+    @partial(jax.jit, static_argnums=(0, 2))
     def predict(self, X: ArrayLike, n_components: Optional[int] = None) -> jax.Array:
         """
         Predicts with Improved Kernel PLS Algorithm #1 on `X` with `B` using
@@ -1053,9 +1200,212 @@ class PLSBase(abc.ABC):
         `X_std`, `Y_mean`, and `Y_std` instead of the ones stored in the class
         instance.
         """
+        if not self.fitted_:
+            raise NotFittedError(
+                "This model is not fitted yet, call 'fit' with approriate arguments before 'predict'."
+            )
         return self.stateless_predict(
             X, self.B, n_components, self.X_mean, self.X_std, self.Y_mean, self.Y_std
         )
+
+    def transform(
+        self,
+        X: Optional[ArrayLike] = None,
+        Y: Optional[ArrayLike] = None,
+        n_components: Optional[int] = None,
+        copy: bool = True,
+    ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], None]:
+        """
+        Transforms `X` and `Y` to their respective scores using `n_components` components.
+        If `n_components` is None, then scores for all components up to `A` are returned.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K) or None, optional, default=None
+            Predictor variables.
+        Y : Array of shape (N, M) or None, optional, default=None
+            Response variables.
+        n_components : int or None, optional, default=None.
+            Number of components in the PLS model. If None, then scores for all
+            components up to `A` are returned.
+
+        copy : bool, default=True
+            Whether to copy `X` and `Y` before potentially applying centering and
+            scaling. If True, then the data is copied beforehand. If False, and `dtype`
+            matches the type of `X` and `Y`, then centering and scaling is done inplace,
+            modifying both arrays.
+
+        Returns
+        -------
+        T : Array of shape (N, n_components) or (N, A) or None
+            X scores of `X`. If `n_components` is an int, then the scores up to
+            `n_components` is used. If `n_components` is None, returns scores for all
+            components up to `A`.
+        U : Array of shape (N, n_components) or (N, A) or None
+            Y scores of `Y`. If `n_components` is an int, then the scores up to
+            `n_components` is used. If `n_components` is None, returns scores for all
+            components up to `A`.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has not been fitted before calling `transform()`.
+
+        See Also
+        --------
+        fit_transform : Fits the model and returns the scores of `X` and `Y`.
+        inverse_transform : Reconstructs `X` and `Y` from their respective scores.
+
+        Notes
+        -----
+        If multiple calls to `transform` are made with Y provided and a previously seen
+        value of `n_components`, then self.R_Y[n_components] is only computed once and
+        stored for future use.
+
+        Any centering and scaling of `X`and `Y` is carried out before computation of
+        the scores and is undone afterwards.
+        """
+        if not self.fitted_:
+            raise NotFittedError(
+                "This model is not fitted yet, call 'fit' with approriate arguments before 'transform'."
+            )
+        if n_components is None:
+            n_components = self.A
+        if X is not None:
+            X = self._convert_input_to_array(X)
+            if (self.center_X or self.scale_X) and copy:
+                X = X.copy()
+            if self.center_X:
+                X -= self.X_mean
+            if self.scale_X:
+                X /= self.X_std
+            T = X @ self.R[:, :n_components]
+        if Y is not None:
+            Y = self._convert_input_to_array(Y)
+            if (self.center_Y or self.scale_Y) and copy:
+                Y = Y.copy()
+            if self.center_Y:
+                Y -= self.Y_mean
+            if self.scale_Y:
+                Y /= self.Y_std
+            U = Y @ self.R_Y[n_components]
+        if X is not None and Y is not None:
+            return T, U
+        if X is not None:
+            return T
+        if Y is not None:
+            return U
+        return None
+
+    def fit_transform(
+        self,
+        X: ArrayLike,
+        Y: ArrayLike,
+        A: int,
+        weights: Optional[ArrayLike] = None,
+    ) -> Tuple[jax.Array, jax.Array]:
+        """
+        Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components and
+        returns T and U which are the scores of `X` and `Y`, respectively.
+
+        Parameters
+        ----------
+        X : Array of shape (N, K)
+            Predictor variables.
+
+        Y : Array of shape (N, M) or (N,)
+            Response variables.
+
+        A : int
+            Number of components in the PLS model.
+
+        weights : Array of shape (N,) or None, optional, default=None
+            Weights for each observation. If None, then all observations are weighted
+            equally.
+
+        Returns
+        -------
+        T : Array of shape (N, A)
+            PLS scores matrix of X.
+
+        U : Array of shape (N, A)
+            PLS scores matrix of Y.
+
+        See Also
+        --------
+        transform : Transforms `X` and `Y` to their respective scores.
+        inverse_transform : Reconstructs `X` and `Y` from their respective scores.
+        """
+        self.fit(X=X, Y=Y, A=A, weights=weights)
+        if self.T is not None and weights is None:
+            return jnp.copy(self.T), self.transform(Y=Y)
+        return self.transform(X=X, Y=Y)
+
+    def inverse_transform(
+        self,
+        T: Optional[ArrayLike] = None,
+        U: Optional[ArrayLike] = None,
+    ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], None]:
+        """
+        Reconstructs `X` and `Y` from their respective scores.
+
+        Parameters
+        ----------
+        T : Array of shape (N, n_X_components) or (N, A) or None, optional, default=None
+            Scores of predictor variables.
+        U : Array of shape (N, n_Y_components) or (N, A) or None, optional, default=None
+            Scores of response variables.
+
+        Returns
+        -------
+        X_reconstructed : Array of shape (N, K)
+            If `T` is not None, returns the reconstructed `X`.
+        Y_reconstructed : Array of shape (N, M)
+            If `U` is not None, returns the reconstructed `Y`.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has not been fitted before calling `inverse_transform()`.
+
+        See Also
+        --------
+        transform : Transforms `X` and `Y` to their respective scores.
+        fit_transform : Fits the model and returns the scores of `X` and `Y`.
+        """
+        if not self.fitted_:
+            raise NotFittedError(
+                "This model is not fitted yet, call 'fit' with approriate arguments before 'inverse_transform'."
+            )
+        X_reconstructed = None
+        Y_reconstructed = None
+
+        if T is not None:
+            T = self._convert_input_to_array(T)
+            X_components = T.shape[1]
+            X_reconstructed = T @ self.P[:, :X_components].T
+            if self.scale_X:
+                X_reconstructed = X_reconstructed * self.X_std
+            if self.center_X:
+                X_reconstructed = X_reconstructed + self.X_mean
+
+        if U is not None:
+            U = self._convert_input_to_array(U)
+            Y_components = U.shape[1]
+            Y_reconstructed = U @ self.Q[:, :Y_components].T
+            if self.scale_Y:
+                Y_reconstructed = Y_reconstructed * self.Y_std
+            if self.center_Y:
+                Y_reconstructed = Y_reconstructed + self.Y_mean
+
+        if X_reconstructed is not None and Y_reconstructed is not None:
+            return X_reconstructed, Y_reconstructed
+        elif X_reconstructed is not None:
+            return X_reconstructed
+        elif Y_reconstructed is not None:
+            return Y_reconstructed
+        else:
+            return None
 
     @partial(jax.jit, static_argnums=(0, 3, 8))
     def stateless_fit_predict_eval(
@@ -1251,7 +1601,7 @@ class PLSBase(abc.ABC):
             `weights_train`, and `weights_val`, and returning a Tuple of preprocessed
             `X_train`, `Y_train`, `X_val`, and `Y_val`.
 
-        show_progress : bool, optional, default=True
+        show_progress : bool, default=True
             If True, displays a progress bar for the cross-validation.
 
         weights : Array of shape (N,) or None, optional, default=None

@@ -12,9 +12,10 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
+import sys
 from collections.abc import Callable
 from itertools import product
-from typing import List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 import jax
 import numpy as np
@@ -24,6 +25,7 @@ from jax import numpy as jnp
 from numpy.testing import assert_allclose
 from sklearn.cross_decomposition import PLSRegression as SkPLS
 from sklearn.datasets import load_linnerud
+from sklearn.exceptions import NotFittedError
 from sklearn.model_selection import cross_validate
 
 from ikpls.fast_cross_validation.numpy_ikpls import PLS as FastCVPLS
@@ -327,6 +329,7 @@ class TestClass:
         scale_Y: bool,
         fast_cv: bool,
         ddof=1,
+        float_bits: Literal[32, 64] = 64,
     ):
         """
         Description
@@ -350,12 +353,26 @@ class TestClass:
         fast_cv : bool
             Whether to return the fast cross-validation PLS model as well.
 
+        float_bits : Literal int
+            Number of floating point bits to use. Must be either 16, 32 or 64.
+
         Returns
         -------
         Tuple[NpPLS, NpPLS, JAX_Alg_1, JAX_Alg_2, JAX_Alg_1, JAX_Alg_2] or
         Tuple[NpPLS, NpPLS, JAX_Alg_1, JAX_Alg_2, JAX_Alg_1, JAX_Alg_2, FastCVPLS, FastCVPLS]
             PLS models with different preprocessing settings.
         """
+
+        if float_bits == 32:
+            np_dtype = np.float32
+            jax_dtype = jnp.float32
+        elif float_bits == 64:
+            np_dtype = np.float64
+            jax_dtype = jnp.float64
+        else:
+            raise ValueError(
+                f"float_bits must be one of 32, or 64 but was {float_bits}"
+            )
 
         np_pls_alg_1 = NpPLS(
             algorithm=1,
@@ -364,6 +381,7 @@ class TestClass:
             scale_X=scale_X,
             scale_Y=scale_Y,
             ddof=ddof,
+            dtype=np_dtype,
         )
         np_pls_alg_2 = NpPLS(
             algorithm=2,
@@ -372,6 +390,7 @@ class TestClass:
             scale_X=scale_X,
             scale_Y=scale_Y,
             ddof=ddof,
+            dtype=np_dtype,
         )
         jax_pls_alg_1 = JAX_Alg_1(
             center_X=center_X,
@@ -381,6 +400,7 @@ class TestClass:
             ddof=ddof,
             differentiable=False,
             verbose=True,
+            dtype=jax_dtype,
         )
         jax_pls_alg_2 = JAX_Alg_2(
             center_X=center_X,
@@ -390,6 +410,7 @@ class TestClass:
             ddof=ddof,
             differentiable=False,
             verbose=True,
+            dtype=jax_dtype,
         )
         diff_jax_pls_alg_1 = JAX_Alg_1(
             center_X=center_X,
@@ -399,6 +420,7 @@ class TestClass:
             ddof=ddof,
             differentiable=True,
             verbose=True,
+            dtype=jax_dtype,
         )
         diff_jax_pls_alg_2 = JAX_Alg_2(
             center_X=center_X,
@@ -408,6 +430,7 @@ class TestClass:
             ddof=ddof,
             differentiable=True,
             verbose=True,
+            dtype=jax_dtype,
         )
 
         if fast_cv:
@@ -418,6 +441,7 @@ class TestClass:
                 scale_X=scale_X,
                 scale_Y=scale_Y,
                 ddof=ddof,
+                dtype=np_dtype,
             )
             fast_cv_pls_alg_2 = FastCVPLS(
                 algorithm=2,
@@ -426,6 +450,7 @@ class TestClass:
                 scale_X=scale_X,
                 scale_Y=scale_Y,
                 ddof=ddof,
+                dtype=np_dtype,
             )
             return (
                 np_pls_alg_1,
@@ -515,7 +540,10 @@ class TestClass:
         diff_jax_pls_alg_2.fit(X=jnp_X, Y=jnp_Y, A=n_components, weights=weights)
 
         if weights is None and return_sk_pls:
-            sk_pls = SkPLS(n_components=n_components)
+            if scale_X and scale_Y:
+                sk_pls = SkPLS(n_components=n_components, scale=True)
+            else:
+                sk_pls = SkPLS(n_components=n_components, scale=False)
             sk_pls.fit(X=X, y=Y)
             # Reconstruct SkPLS regression matrix for all components
             sk_B = np.empty(np_pls_alg_1.B.shape)
@@ -3893,7 +3921,7 @@ class TestClass:
         largest_split = np.max(
             [np.count_nonzero(splits == split) for split in unique_splits]
         )
-        n_components = min(X.shape[1], largest_split)
+        n_components = min(X.shape[1], int(largest_split))
 
         for (
             center_X,
@@ -5445,3 +5473,1333 @@ class TestClass:
         assert Y.shape[1] == 1
 
         self.check_nonnegative_weights(X, Y, random_weights, splits)
+
+    def check_transform(self, X, Y, weights, fit_transform, atol, rtol):
+        center_Xs = [False, True]
+        center_Ys = [False, True]
+        scale_Xs = [False, True]
+        scale_Ys = [False, True]
+        center_scale_combinations = product(center_Xs, center_Ys, scale_Xs, scale_Ys)
+        n_components = min(X.shape[0], X.shape[1])
+        for center_X, center_Y, scale_X, scale_Y in center_scale_combinations:
+            if fit_transform:
+                (
+                    np_pls_alg_1,
+                    np_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
+                ) = self.get_models(
+                    center_X=center_X,
+                    center_Y=center_Y,
+                    scale_X=scale_X,
+                    scale_Y=scale_Y,
+                    fast_cv=False,
+                )
+            else:
+                (
+                    np_pls_alg_1,
+                    np_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
+                ) = self.fit_models(
+                    X=X,
+                    Y=Y,
+                    n_components=n_components,
+                    center_X=center_X,
+                    center_Y=center_Y,
+                    scale_X=scale_X,
+                    scale_Y=scale_Y,
+                    weights=weights,
+                    return_sk_pls=False,
+                )
+            use_sk = (
+                center_X and center_Y and (scale_X == scale_Y) and (weights is None)
+            )
+
+            for nc in range(1, n_components + 1):
+                if fit_transform:
+                    np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
+                        np_pls_alg_1.fit_transform(X=X, Y=Y, A=nc, weights=weights)
+                    )
+                else:
+                    np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
+                        np_pls_alg_1.transform(X=X, Y=Y, n_components=nc)
+                    )
+
+                if use_sk:
+                    sk_pls = SkPLS(n_components=nc, scale=scale_X)
+                    sk_transformed_X, sk_transformed_Y = sk_pls.fit_transform(X, Y)
+                    assert_allclose(
+                        np.abs(np_pls_alg_1_transformed_X),
+                        np.abs(sk_transformed_X),
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=f"Model NpPLS Alg 1, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                        f", n_components: {nc}",
+                    )
+                    assert_allclose(
+                        np.abs(np_pls_alg_1_transformed_Y),
+                        np.abs(sk_transformed_Y),
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=f"Model NpPLS Alg 1, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                        f", n_components: {nc}",
+                    )
+
+                for model in [
+                    np_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
+                ]:
+                    if fit_transform:
+                        transformed_X, transformed_Y = model.fit_transform(
+                            X=X, Y=Y, A=nc, weights=weights
+                        )
+                    else:
+                        transformed_X, transformed_Y = model.transform(
+                            X=X, Y=Y, n_components=nc
+                        )
+
+                    err_msg = (
+                        f"Model {model}, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                        f", n_components: {nc}"
+                    )
+
+                    assert_allclose(
+                        np.abs(transformed_X),
+                        np.abs(np_pls_alg_1_transformed_X),
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=err_msg,
+                    )
+                    assert_allclose(
+                        np.abs(transformed_Y),
+                        np.abs(np_pls_alg_1_transformed_Y),
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=err_msg,
+                    )
+
+    def test_transform_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        calls the `check_transform` method to validate the transform method of the PLS
+        algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, weights, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, weights, fit_transform=True, atol=1e-6, rtol=1e-6)
+
+    def test_transform_pls_2_m_less_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is less than K). It then calls the `check_transform` method to validate the
+        transform method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] < X.shape[1]
+
+        self.check_transform(X, Y, None, fit_transform=False, atol=5e-4, rtol=5e-4)
+        self.check_transform(X, Y, None, fit_transform=True, atol=5e-4, rtol=5e-4)
+        self.check_transform(X, Y, weights, fit_transform=False, atol=5e-4, rtol=5e-4)
+        self.check_transform(X, Y, weights, fit_transform=True, atol=5e-4, rtol=5e-4)
+
+    def test_transform_pls_2_m_eq_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is equal to K). It then calls the `check_transform` method to validate the
+        transform method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 2
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] == X.shape[1]
+
+        self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, weights, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, weights, fit_transform=True, atol=1e-6, rtol=1e-6)
+
+    def test_transform_pls_2_m_greater_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is greater than K). It then calls the `check_transform` method to validate the
+        transform method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Rye_Midsummer",
+                "Wheat_H1",
+                "Wheat_H3",
+                "Wheat_H4",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 3
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] > X.shape[1]
+
+        self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, weights, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, weights, fit_transform=True, atol=1e-6, rtol=1e-6)
+
+    def check_inverse_transform(self, X, Y, weights, atol, rtol):
+        center_Xs = [False, True]
+        center_Ys = [False, True]
+        scale_Xs = [False, True]
+        scale_Ys = [False, True]
+        center_scale_combinations = product(center_Xs, center_Ys, scale_Xs, scale_Ys)
+        n_components = min(X.shape[0], X.shape[1])
+        for center_X, center_Y, scale_X, scale_Y in center_scale_combinations:
+            (
+                np_pls_alg_1,
+                np_pls_alg_2,
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
+            ) = self.fit_models(
+                X=X,
+                Y=Y,
+                n_components=n_components,
+                center_X=center_X,
+                center_Y=center_Y,
+                scale_X=scale_X,
+                scale_Y=scale_Y,
+                weights=weights,
+                return_sk_pls=False,
+            )
+
+            use_sk = (
+                center_X and center_Y and (scale_X == scale_Y) and (weights is None)
+            )
+
+            for nc in range(1, n_components + 1):
+                np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
+                    np_pls_alg_1.transform(X=X, Y=Y, n_components=nc)
+                )
+                (
+                    np_pls_alg_1_inverse_transformed_X,
+                    np_pls_alg_1_inverse_transformed_Y,
+                ) = np_pls_alg_1.inverse_transform(
+                    T=np_pls_alg_1_transformed_X,
+                    U=np_pls_alg_1_transformed_Y,
+                )
+
+                if use_sk:
+                    sk_pls = SkPLS(n_components=nc, scale=scale_X)
+                    sk_transformed_X, sk_transformed_Y = sk_pls.fit_transform(X, Y)
+                    sk_inverse_transformed_X, sk_inverse_transformed_Y = (
+                        sk_pls.inverse_transform(X=sk_transformed_X, y=sk_transformed_Y)
+                    )
+                    assert_allclose(
+                        np_pls_alg_1_inverse_transformed_X,
+                        sk_inverse_transformed_X,
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=f"Model NpPLS Alg 1, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                        f", n_components: {nc}",
+                    )
+                    assert_allclose(
+                        np_pls_alg_1_inverse_transformed_Y,
+                        sk_inverse_transformed_Y,
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=f"Model NpPLS Alg 1, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                        f", n_components: {nc}",
+                    )
+
+                for model in [
+                    np_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
+                ]:
+                    transformed_X, transformed_Y = model.transform(
+                        X=X, Y=Y, n_components=nc
+                    )
+                    inverse_transformed_X, inverse_transformed_Y = (
+                        model.inverse_transform(T=transformed_X, U=transformed_Y)
+                    )
+
+                    err_msg = (
+                        f"Model {model}, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                        f", n_components: {nc}"
+                    )
+
+                    assert_allclose(
+                        inverse_transformed_X,
+                        np_pls_alg_1_inverse_transformed_X,
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=err_msg,
+                    )
+                    assert_allclose(
+                        inverse_transformed_Y,
+                        np_pls_alg_1_inverse_transformed_Y,
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=err_msg,
+                    )
+
+    def test_inverse_transform_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        calls the `check_inverse_transform` method to validate the inverse_transform
+        method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_inverse_transform(X, Y, None, atol=1e-6, rtol=1e-6)
+        self.check_inverse_transform(X, Y, weights, atol=1e-6, rtol=1e-6)
+
+    def test_inverse_transform_pls_2_m_less_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is less than K). It then calls the `check_inverse_transform` method to validate
+        the inverse_transform method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] < X.shape[1]
+
+        self.check_inverse_transform(X, Y, None, atol=1e-5, rtol=1e-5)
+        self.check_inverse_transform(X, Y, weights, atol=1e-5, rtol=1e-5)
+
+    def test_inverse_transform_pls_2_m_eq_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is equal to K). It then calls the `check_inverse_transform` method to validate
+        the inverse_transform method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 2
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] == X.shape[1]
+
+        self.check_inverse_transform(X, Y, None, atol=1e-6, rtol=1e-6)
+        self.check_inverse_transform(X, Y, weights, atol=1e-6, rtol=1e-6)
+
+    def test_inverse_transform_pls_2_m_greater_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is greater than K). It then calls the `check_inverse_transform` method to validate
+        the inverse_transform method of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Rye_Midsummer",
+                "Wheat_H1",
+                "Wheat_H3",
+                "Wheat_H4",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 3
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] > X.shape[1]
+
+        self.check_inverse_transform(X, Y, None, atol=1e-6, rtol=1e-6)
+        self.check_inverse_transform(X, Y, weights, atol=1e-6, rtol=1e-6)
+
+    def check_transform_inverse_transform_different_shapes_X_Y(
+        self, X, Y, weights, atol, rtol
+    ):
+        center_Xs = [False, True]
+        center_Ys = [False, True]
+        scale_Xs = [False, True]
+        scale_Ys = [False, True]
+        center_scale_combinations = product(center_Xs, center_Ys, scale_Xs, scale_Ys)
+        n_components = min(X.shape[0], X.shape[1])
+        for center_X, center_Y, scale_X, scale_Y in center_scale_combinations:
+            (
+                np_pls_alg_1,
+                np_pls_alg_2,
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
+            ) = self.fit_models(
+                X=X,
+                Y=Y,
+                n_components=n_components,
+                center_X=center_X,
+                center_Y=center_Y,
+                scale_X=scale_X,
+                scale_Y=scale_Y,
+                weights=weights,
+                return_sk_pls=False,
+            )
+
+            # Check that full reconstruction is flawless
+            for model in [
+                np_pls_alg_1,
+                np_pls_alg_2,
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
+            ]:
+                err_msg = err_msg = (
+                    f"Model {model}, Center_X: {center_X}, Center_Y: "
+                    f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                )
+                T, U = model.transform(X=X, Y=Y)
+                reconstructed_X, reconstructed_Y = model.inverse_transform(T=T, U=U)
+                assert_allclose(
+                    reconstructed_X, X, atol=atol, rtol=rtol, err_msg=err_msg
+                )
+                if (
+                    Y.shape[1] > X.shape[1]
+                ):  # M > K. We can not reconstruct Y fully if it has full rank.
+                    continue
+                assert_allclose(
+                    reconstructed_Y, Y, atol=atol, rtol=rtol, err_msg=err_msg
+                )
+
+            for X_components, Y_components in [(1, 2), (2, 1)]:
+                np_pls_alg_1_transformed_X = np_pls_alg_1.transform(
+                    X=X, n_components=X_components
+                )
+                np_pls_alg_1_transformed_Y = np_pls_alg_1.transform(
+                    Y=Y, n_components=Y_components
+                )
+                (
+                    np_pls_alg_1_inverse_transformed_X,
+                    np_pls_alg_1_inverse_transformed_Y,
+                ) = np_pls_alg_1.inverse_transform(
+                    T=np_pls_alg_1_transformed_X,
+                    U=np_pls_alg_1_transformed_Y,
+                )
+                for model in [
+                    np_pls_alg_2,
+                    jax_pls_alg_1,
+                    jax_pls_alg_2,
+                    diff_jax_pls_alg_1,
+                    diff_jax_pls_alg_2,
+                ]:
+                    transformed_X = model.transform(X=X, n_components=X_components)
+                    transformed_Y = model.transform(Y=Y, n_components=Y_components)
+                    inverse_transformed_X, inverse_transformed_Y = (
+                        model.inverse_transform(T=transformed_X, U=transformed_Y)
+                    )
+
+                    err_msg = (
+                        f"Model {model}, Center_X: {center_X}, Center_Y: "
+                        f"{center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
+                    )
+
+                    assert_allclose(
+                        inverse_transformed_X,
+                        np_pls_alg_1_inverse_transformed_X,
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=err_msg,
+                    )
+                    assert_allclose(
+                        inverse_transformed_Y,
+                        np_pls_alg_1_inverse_transformed_Y,
+                        atol=atol,
+                        rtol=rtol,
+                        err_msg=err_msg,
+                    )
+
+    def test_transform_inverse_transform_different_shapes_X_Y_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables with
+        different number of features. It then calls the
+        `check_transform_inverse_transform_different_shapes_X_Y` method to validate the
+        transform and inverse_transform methods of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, None, atol=1e-6, rtol=1e-6
+        )
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, weights, atol=1e-6, rtol=1e-6
+        )
+
+    def test_transform_inverse_transform_different_shapes_X_Y_pls_2_m_less_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables with
+        different number of features. It then calls the
+        `check_transform_inverse_transform_different_shapes_X_Y` method to validate the
+        transform and inverse_transform methods of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] < X.shape[1]
+
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, None, atol=1e-5, rtol=1e-5
+        )
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, weights, atol=1e-5, rtol=1e-5
+        )
+
+    def test_transform_inverse_transform_different_shapes_X_Y_pls_2_m_eq_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables with
+        different number of features. It then calls the
+        `check_transform_inverse_transform_different_shapes_X_Y` method to validate the
+        transform and inverse_transform methods of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 2
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] == X.shape[1]
+
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, None, atol=1e-6, rtol=1e-6
+        )
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, weights, atol=1e-6, rtol=1e-6
+        )
+
+    def test_transform_inverse_transform_different_shapes_X_Y_pls_2_m_greater_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables with
+        different number of features. It then calls the
+        `check_transform_inverse_transform_different_shapes_X_Y` method to validate the
+        transform and inverse_transform methods of the PLS algorithms.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Rye_Midsummer",
+                "Wheat_H1",
+                "Wheat_H3",
+                "Wheat_H4",
+            ]
+        )
+        weights = self.load_weights(None)
+        step = 100
+        cutoff = 3
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] > X.shape[1]
+
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, None, atol=1e-6, rtol=1e-6
+        )
+        self.check_transform_inverse_transform_different_shapes_X_Y(
+            X, Y, weights, atol=1e-6, rtol=1e-6
+        )
+
+    def check_transform_inverse_transform_refit_transform_inverse_transform(
+        self, X, Y, atol, rtol
+    ):
+        center_X = center_Y = scale_X = scale_Y = True
+        n_components = min(X.shape[0], X.shape[1])
+        (
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            diff_jax_pls_alg_1,
+            diff_jax_pls_alg_2,
+        ) = self.get_models(
+            center_X=center_X,
+            center_Y=center_Y,
+            scale_X=scale_X,
+            scale_Y=scale_Y,
+            fast_cv=False,
+        )
+        for X_to_use, Y_to_use, n_components_to_use in [
+            (X, Y, n_components),
+            (X[::2, :], Y[::2, :], n_components // 2),
+        ]:
+            sk_pls = SkPLS(n_components=n_components_to_use, scale=scale_X)
+            sk_pls.fit(X_to_use, Y_to_use)
+            sk_transformed_X, sk_transformed_Y = sk_pls.transform(X_to_use, Y_to_use)
+            sk_inverse_transformed_X, sk_inverse_transformed_Y = (
+                sk_pls.inverse_transform(X=sk_transformed_X, y=sk_transformed_Y)
+            )
+            for model in [
+                np_pls_alg_1,
+                np_pls_alg_2,
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
+            ]:
+                transformed_X, transformed_Y = model.fit_transform(
+                    X=X_to_use, Y=Y_to_use, A=n_components_to_use
+                )
+                inverse_transformed_X, inverse_transformed_Y = model.inverse_transform(
+                    T=transformed_X, U=transformed_Y
+                )
+
+                err_msg = f"Model {model}, fit with n_components: {n_components_to_use}"
+
+                assert_allclose(
+                    np.abs(transformed_X),
+                    np.abs(sk_transformed_X),
+                    atol=atol,
+                    rtol=rtol,
+                    err_msg=err_msg,
+                )
+
+                assert_allclose(
+                    np.abs(transformed_Y),
+                    np.abs(sk_transformed_Y),
+                    atol=atol,
+                    rtol=rtol,
+                    err_msg=err_msg,
+                )
+
+                assert_allclose(
+                    inverse_transformed_X,
+                    sk_inverse_transformed_X,
+                    atol=atol,
+                    rtol=rtol,
+                    err_msg=err_msg,
+                )
+                assert_allclose(
+                    inverse_transformed_Y,
+                    sk_inverse_transformed_Y,
+                    atol=atol,
+                    rtol=rtol,
+                    err_msg=err_msg,
+                )
+
+    def test_transform_inverse_transform_refit_transform_inverse_transform_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        calls the `check_transform_inverse_transform_refit_transform_inverse_transform`
+        method to validate that refitting the model and performing transform and
+        inverse_transform works as expected.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_transform_inverse_transform_refit_transform_inverse_transform(
+            X, Y, atol=1e-6, rtol=1e-6
+        )
+
+    def check_no_predict_no_transform_no_inverse_transform_before_fit(self, X, Y):
+        center_X = center_Y = scale_X = scale_Y = True
+        n_components = min(X.shape[0], X.shape[1])
+        (
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            diff_jax_pls_alg_1,
+            diff_jax_pls_alg_2,
+        ) = self.get_models(
+            center_X=center_X,
+            center_Y=center_Y,
+            scale_X=scale_X,
+            scale_Y=scale_Y,
+            fast_cv=False,
+        )
+        for model in [
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            diff_jax_pls_alg_1,
+            diff_jax_pls_alg_2,
+        ]:
+            with pytest.raises(NotFittedError, match="This model is not fitted yet."):
+                model.predict(X=X)
+            with pytest.raises(NotFittedError, match="This model is not fitted yet."):
+                model.transform(X=X, Y=Y, n_components=n_components)
+            with pytest.raises(NotFittedError, match="This model is not fitted yet."):
+                model.inverse_transform(T=X, U=Y)
+
+    def test_no_predict_no_transform_no_inverse_transform_before_fit_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        calls the `check_no_predict_no_transform_no_inverse_transform_before_fit` method
+        to validate that calling predict, transform, or inverse_transform before fitting
+        raises a NotFittedError.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_no_predict_no_transform_no_inverse_transform_before_fit(X, Y)
+
+    def check_R_Y_access(self, X, Y):
+        center_X = center_Y = scale_X = scale_Y = False
+        n_components = min(X.shape[0], X.shape[1])
+        models = self.fit_models(
+            X=X,
+            Y=Y,
+            n_components=n_components,
+            center_X=center_X,
+            center_Y=center_Y,
+            scale_X=scale_X,
+            scale_Y=scale_Y,
+            return_sk_pls=False,
+        )
+        for m in models:
+            for nc in range(1, n_components + 1):
+                _ = m.R_Y[nc]
+            with pytest.raises(KeyError):
+                _ = m.R_Y[0]
+            with pytest.raises(KeyError):
+                _ = m.R_Y[n_components + 1]
+
+    def test_R_Y_access(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        calls the `check_R_Y_access` method to validate that R_Y can be accessed for
+        valid number of components and raises KeyError for invalid number of components.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+
+        assert Y.shape[1] == 1
+
+        self.check_R_Y_access(X, Y)
+
+    def check_copy(self, X, Y, weights, splits):
+        center_X = center_Y = scale_X = scale_Y = True
+        n_components = min(X.shape[0], X.shape[1])
+        X_copy = np.copy(X)
+        Y_copy = np.copy(Y)
+        if weights is not None:
+            weights_copy = np.copy(weights)
+        (
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            diff_jax_pls_alg_1,
+            diff_jax_pls_alg_2,
+            fast_cv_pls_alg_1,
+            fast_cv_pls_alg_2,
+        ) = self.get_models(
+            center_X=center_X,
+            center_Y=center_Y,
+            scale_X=scale_X,
+            scale_Y=scale_Y,
+            fast_cv=True,
+        )
+        for model in [
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            diff_jax_pls_alg_1,
+            diff_jax_pls_alg_2,
+        ]:
+            model.fit(X=X, Y=Y, A=n_components, weights=weights)
+            assert_allclose(X, X_copy, atol=0, rtol=0)
+            assert_allclose(Y, Y_copy, atol=0, rtol=0)
+            if weights is not None:
+                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+
+            model.predict(X=X)
+            assert_allclose(X, X_copy, atol=0, rtol=0)
+            assert_allclose(Y, Y_copy, atol=0, rtol=0)
+            if weights is not None:
+                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+
+            model.transform(X=X, Y=Y, n_components=n_components)
+            assert_allclose(X, X_copy, atol=0, rtol=0)
+            assert_allclose(Y, Y_copy, atol=0, rtol=0)
+            if weights is not None:
+                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+
+            model.fit_transform(X=X, Y=Y, A=n_components, weights=weights)
+            assert_allclose(X, X_copy, atol=0, rtol=0)
+            assert_allclose(Y, Y_copy, atol=0, rtol=0)
+            if weights is not None:
+                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+
+        for model in [fast_cv_pls_alg_1, fast_cv_pls_alg_2]:
+            model.cross_validate(
+                X=X,
+                Y=X,
+                A=n_components,
+                folds=splits,
+                metric_function=self.rmse_per_component,
+                weights=weights,
+            )
+            assert_allclose(X, X_copy, atol=0, rtol=0)
+            assert_allclose(Y, Y_copy, atol=0, rtol=0)
+            if weights is not None:
+                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            model.cross_validate(
+                X=X,
+                Y=X,
+                A=n_components,
+                folds=splits,
+                metric_function=self.rmse_per_component,
+                weights=weights,
+                n_jobs=1,
+            )
+            assert_allclose(X, X_copy, atol=0, rtol=0)
+            assert_allclose(Y, Y_copy, atol=0, rtol=0)
+            if weights is not None:
+                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+
+    def test_copy_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        checks that original arrays are left unchanged when applying centering and
+        scaling through `fit`, `predict`, `transform`, and `fit_transform`.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+        splits = splits[::step]
+
+        assert Y.shape[1] == 1
+        self.check_copy(X, Y, None, splits)
+        self.check_copy(X, Y, weights, splits)
+
+    def test_copy_pls_2_m_less_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a multiple target variables
+        (where M is less than K). It then checks that original arrays are left
+        unchanged when applying centering and scaling through `fit`, `predict`,
+        `transform`, and `fit_transform`.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+        splits = splits[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] < X.shape[1]
+        self.check_copy(X, Y, None, splits)
+        self.check_copy(X, Y, weights, splits)
+
+    def test_copy_pls_2_m_greater_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where M
+        is greater than K). It then checks that original arrays are left unchanged when
+        applying centering and scaling through `fit`, `predict`, `transform`, and
+        `fit_transform`.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Rye_Midsummer",
+                "Wheat_H1",
+                "Wheat_H3",
+                "Wheat_H4",
+            ]
+        )
+        weights = self.load_weights(None)
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        step = 100
+        cutoff = 3
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+        splits = splits[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] > X.shape[1]
+        self.check_copy(X, Y, None, splits)
+        self.check_copy(X, Y, weights, splits)
+
+    def check_dtype(self, X, Y, weights, splits):
+        center_Xs = [False, True]
+        center_Ys = [False, True]
+        scale_Xs = [False, True]
+        scale_Ys = [False, True]
+        float_bits = [32, 64]
+        for center_X, center_Y, scale_X, scale_Y, fb in product(
+            center_Xs, center_Ys, scale_Xs, scale_Ys, float_bits
+        ):
+            n_components = min(X.shape[0], X.shape[1])
+            (
+                np_pls_alg_1,
+                np_pls_alg_2,
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
+                fast_cv_pls_alg_1,
+                fast_cv_pls_alg_2,
+            ) = self.get_models(
+                center_X=center_X,
+                center_Y=center_Y,
+                scale_X=scale_X,
+                scale_Y=scale_Y,
+                fast_cv=True,
+                float_bits=fb,
+            )
+            # Skip NumPy PLS on macOS with float32 due to SVD convergence issues
+            # in the Accelerate framework's LAPACK implementation.
+            if not (sys.platform == "darwin" and fb == 32 and Y.shape[1] >= X.shape[1]):
+                for model in [
+                    np_pls_alg_1,
+                    np_pls_alg_2,
+                ]:
+                    err_msg = f"model: {model}, center_X: {center_X}, center_Y: {center_Y}, scale_X: {scale_X}, scale_Y: {scale_Y}, fb: {fb}"
+                    if fb == 32:
+                        dtype = np.float32
+                    elif fb == 64:
+                        dtype = np.float64
+                    else:
+                        raise ValueError(f"Invalid number of float bits: {fb}")
+
+                    model.fit(X=X, Y=Y, A=n_components, weights=weights)
+                    assert model.B.dtype == dtype, err_msg
+
+                    res = model.predict(X=X)
+                    assert res.dtype == dtype, err_msg
+
+                    T, U = model.transform(X=X, Y=Y, n_components=n_components)
+                    assert T.dtype == dtype, err_msg
+                    assert U.dtype == dtype, err_msg
+
+                    rX, rY = model.inverse_transform(T, U)
+                    assert rX.dtype == dtype, err_msg
+                    assert rY.dtype == dtype, err_msg
+
+                    intX = np.arange(9)
+                    intY = np.arange(9)
+                    riX, riY = model.inverse_transform(intX, intY)
+                    assert riX.dtype == dtype, err_msg
+                    assert riY.dtype == dtype, err_msg
+
+                    T, U = model.fit_transform(
+                        X=X, Y=Y, A=n_components, weights=weights
+                    )
+                    assert T.dtype == dtype, err_msg
+                    assert U.dtype == dtype, err_msg
+
+            for model in [
+                jax_pls_alg_1,
+                jax_pls_alg_2,
+                diff_jax_pls_alg_1,
+                diff_jax_pls_alg_2,
+            ]:
+                err_msg = f"model: {model}, center_X: {center_X}, center_Y: {center_Y}, scale_X: {scale_X}, scale_Y: {scale_Y}, fb: {fb}"
+                if fb == 32:
+                    dtype = jnp.float32
+                elif fb == 64:
+                    dtype = jnp.float64
+                else:
+                    raise ValueError(f"Invalid number of float bits: {fb}")
+
+                model.fit(X=X, Y=Y, A=n_components, weights=weights)
+                assert model.B.dtype == dtype, err_msg
+
+                res = model.predict(X=X)
+                assert res.dtype == dtype, err_msg
+
+                T, U = model.transform(X=X, Y=Y, n_components=n_components)
+                assert T.dtype == dtype, err_msg
+                assert U.dtype == dtype, err_msg
+
+                rX, rY = model.inverse_transform(T, U)
+                assert rX.dtype == dtype, err_msg
+                assert rY.dtype == dtype, err_msg
+
+                intX = np.arange(9)
+                intY = np.arange(9)
+                riX, riY = model.inverse_transform(intX, intY)
+                assert riX.dtype == dtype, err_msg
+                assert riY.dtype == dtype, err_msg
+
+                T, U = model.fit_transform(X=X, Y=Y, A=n_components, weights=weights)
+                assert T.dtype == dtype, err_msg
+                assert U.dtype == dtype, err_msg
+
+            for model in [fast_cv_pls_alg_1, fast_cv_pls_alg_2]:
+                err_msg = f"model: {model}, center_X: {center_X}, center_Y: {center_Y}, scale_X: {scale_X}, scale_Y: {scale_Y}, fb: {fb}"
+                if fb == 32:
+                    dtype = np.float32
+                elif fb == 64:
+                    dtype = np.float64
+                else:
+                    raise ValueError(f"Invalid number of float bits: {fb}")
+                res = model.cross_validate(
+                    X=X,
+                    Y=X,
+                    A=n_components,
+                    folds=splits,
+                    metric_function=self.rmse_per_component,
+                    weights=weights,
+                )
+                for fold in res:
+                    assert res[fold].dtype == dtype, err_msg
+
+    def test_dtype_pls_1(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a single target variable. It then
+        checks that the dtype is correct through `fit`, `predict`, `transform`, and
+        `fit_transform`.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(["Protein"])
+        weights = self.load_weights(None)
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        # Decrease the amount of samples and features in the interest of time.
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+        splits = splits[::step]
+
+        assert Y.shape[1] == 1
+        self.check_dtype(X, Y, None, splits)
+        self.check_dtype(X, Y, weights, splits)
+
+    def test_dtype_pls_2_m_less_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and a multiple target variables
+        (where M is less than K). It then checks that the dtype is correct through
+        `fit`, `predict`, `transform`, and `fit_transform`.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Moisture",
+                "Protein",
+            ]
+        )
+        weights = self.load_weights(None)
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        step = 100
+        cutoff = 10
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+        splits = splits[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] < X.shape[1]
+        self.check_dtype(X, Y, None, splits)
+        self.check_dtype(X, Y, weights, splits)
+
+    def test_dtype_pls_2_m_greater_k(self):
+        """
+        Description
+        -----------
+        This test loads input predictor variables and multiple target variables (where
+        M is greater than K). It then checks that the dtype is correct through `fit`,
+        `predict`, `transform`, and `fit_transform`.
+
+        Returns
+        -------
+        None
+        """
+        X = self.load_X()
+        Y = self.load_Y(
+            [
+                "Rye_Midsummer",
+                "Wheat_H1",
+                "Wheat_H3",
+                "Wheat_H4",
+            ]
+        )
+        weights = self.load_weights(None)
+        splits = self.load_Y(["split"]).squeeze().astype(np.int64)
+        step = 100
+        cutoff = 3
+        X = X[::step, :cutoff]
+        Y = Y[::step]
+        weights = weights[::step]
+        splits = splits[::step]
+
+        assert Y.shape[1] > 1
+        assert Y.shape[1] > X.shape[1]
+        self.check_dtype(X, Y, None, splits)
+        self.check_dtype(X, Y, weights, splits)

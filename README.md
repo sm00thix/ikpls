@@ -1,31 +1,26 @@
 # Improved Kernel Partial Least Squares (IKPLS) and Fast Cross-Validation
 
-[![PyPI Version](https://img.shields.io/pypi/v/ikpls.svg)](https://pypi.python.org/pypi/ikpls/)
+[![PyPI Version](https://img.shields.io/pypi/v/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
-[![Python Versions](https://img.shields.io/pypi/pyversions/ikpls.svg)](https://pypi.python.org/pypi/ikpls/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
 [![Pepy - Total Downloads](https://img.shields.io/pepy/dt/ikpls)](https://pepy.tech/project/ikpls/)
 
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
-[![License](https://img.shields.io/pypi/l/ikpls.svg)](https://pypi.python.org/pypi/ikpls/)
+[![License](https://img.shields.io/pypi/l/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
 [![Documentation Status](https://readthedocs.org/projects/ikpls/badge/?version=latest)](https://ikpls.readthedocs.io/en/latest/?badge=latest)
 
 [![Tests Status](https://github.com/Sm00thix/IKPLS/actions/workflows/test_workflow.yml/badge.svg)](https://github.com/Sm00thix/IKPLS/actions/workflows/test_workflow.yml)
+
+[![Test Coverage](https://coveralls.io/repos/github/sm00thix/ikpls/badge.svg?branch=main)](https://coveralls.io/github/sm00thix/ikpls?branch=main)
 
 [![Package Status](https://github.com/Sm00thix/IKPLS/actions/workflows/package_workflow.yml/badge.svg)](https://github.com/Sm00thix/IKPLS/actions/workflows/package_workflow.yml)
 
 [![JOSS Status](https://joss.theoj.org/papers/ac559cbcdc6e6551f58bb3e573a73afc/status.svg)](https://joss.theoj.org/papers/ac559cbcdc6e6551f58bb3e573a73afc)
 
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
-
-## NEW IN 3.0.0: Fast cross-validation for weighted IKPLS.
-The `ikpls` software package now directly depends on the `cvmatrix` software package [[11]](#references) to implement the fast cross-validation by Engstrøm and Jensen [[7]](#references). `cvmatrix` extends the fast cross-validation algorithms to correctly handle the weighted cases. The extension includes support for all 16 (12 unique) combinations of weighted centering and weighted scaling for X and Y, increasing neither time nor space complexity.
-
-## NEW IN 2.0.0: Weighted IKPLS
-The `ikpls` software package now also features sample-weighted PLS [[8]](#references). For this, `ikpls` uses the weighted mean [[9]](#references) and standard deviation [[10]](#references) as formulated by National Institute of Science and Technology (NIST).
-Both NumPy and JAX implementations allow for weighted cross-validation with their respective `cross_validate` methods.
 
 ## Citation
 If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533). If you use the fast cross-validation algorithm implemented in `ikpls.fast_cross_validation.numpy_ikpls`, please also cite [this Journal of Chemometrics article](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008).
@@ -40,7 +35,10 @@ implementations subclass scikit-learn's BaseEstimator, they can be used with sci
 [cross_validate](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_validate.html).
 - Use our JAX [[6]](#references) implementations on CPUs or **leverage powerful GPUs and TPUs for PLS modelling**.
   Our JAX implementations are **end-to-end differentaible** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
-- Use our combination of IKPLS with Engstrøm's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
+- Use our combination of IKPLS with Engstrøm's and Jensen's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
+- Use any of the above in combination with **sample-weighted PLS** [[8]](#references).
+- Use our NumPy or JAX implementations for dimensionality reduction to score space with their respective transform methods.
+- Use our NumPy or JAX implementations for reconstruction of original space from score space with their respective inverse_transform methods.
 
 The documentation is available at
 <https://ikpls.readthedocs.io/en/latest/>; examples can be found at
@@ -55,14 +53,14 @@ algorithm benefit both IKPLS Algorithms and especially Algorithm #2. The fast
 cross-validation algorithm is mathematically equivalent to the
 classical cross-validation algorithm. Still, it is much quicker.
 The fast cross-validation algorithm **correctly handles (column-wise)
-centering and scaling** of the X and Y input matrices using training set means and
+centering and scaling** of the $\mathbf{X}$ and $\mathbf{Y}$ input matrices using training set means and
 standard deviations to avoid data leakage from the validation set. This centering
-and scaling can be enabled or disabled independently from eachother and for X and Y 
+and scaling can be enabled or disabled independently from eachother and for $\mathbf{X}$ and $\mathbf{Y}$ 
 by setting the parameters `center_X`, `center_Y`, `scale_X`, and `scale_Y`, respectively.
 In addition to correctly handling (column-wise) centering and scaling,
 the fast cross-validation algorithm **correctly handles row-wise preprocessing**
 that operates independently on each sample such as (row-wise) centering and scaling
-of the X and Y input matrices, convolution, or other preprocessing. Row-wise
+of the $\mathbf{X}$ and $\mathbf{Y}$ input matrices, convolution, or other preprocessing. Row-wise
 preprocessing can safely be applied before passing the data to the fast
 cross-validation algorithm.
 
@@ -72,12 +70,12 @@ The JAX implementations support running on both CPU, GPU, and TPU.
 
 - To enable NVIDIA GPU execution, install JAX and CUDA with:
     ```shell
-    pip3 install -U "jax[cuda12]"
+    pip3 install -U "jax[cuda13]"
     ```
 
 - To enable Google Cloud TPU execution, install JAX with:
     ```shell
-    pip3 install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+    pip3 install -U "jax[tpu]"
     ```
 
 These are typical installation instructions that will be what most users are looking for.
@@ -158,6 +156,17 @@ jax.config.update("jax_enable_x64", True)
 > # X rotations matrix of shape (K, A) = (50, 20).
 > np_ikpls_alg_1.R
 >
+> # Mapping from n_components to Y rotations matrix of shape (M, n_components).
+> # This is not required to compute np_ikpls_alg_1.B and is therefore lazily evaluated and cached.
+> np_ikpls_alg_1.R_Y
+>
+> # Y rotations matrix of shape (M, A) = (10, 20)
+> np_ikpls_alg_1.R_Y[20] # R_Y is now cached for 20 components.
+>
+> # Y rotations matrix for 19 components of shape (M, 19) = (10, 19)
+> # This is NOT the same as np_ikpls_alg_1.R_Y[20][:, :19]
+> np_ikpls_alg_1.R_Y[19] # R_Y is now cached for 20 and 19 components.
+>
 > # X scores matrix of shape (N, A) = (100, 20).
 > # This is only computed for IKPLS Algorithm #1.
 > np_ikpls_alg_1.T
@@ -180,6 +189,12 @@ will find:
 -   [Weighted Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
 -   [Weighted cross-validation with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_numpy.py)
 -   [Weighted cross-validation with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_jax.py)
+-   [Fit, transform to score space, and inverse transform with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/transform_numpy.py)
+-   [Fit, transform to score space, and inverse transform with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/transform_jax.py)
+
+## Changelog
+   
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ## Contribute
 
@@ -196,9 +211,6 @@ Guidelines](https://github.com/Sm00thix/IKPLS/blob/main/CONTRIBUTING.md).
 6. [JAX](https://jax.readthedocs.io/en/latest/)
 7. [Engstrøm, O.-C. G. and Jensen, M. H. (2025). Fast Partition-Based Cross-Validation With Centering and Scaling for $\mathbf{X}^\mathbf{T}\mathbf{X}$ and $\mathbf{X}^\mathbf{T}\mathbf{Y}$](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008)
 8. [Becker and Ismail (2016). Accounting for sampling weights in PLS path modeling: Simulations and empirical examples. *European Management Journal*, 34(6), 606-617.](https://doi.org/10.1016/j.emj.2016.06.009)
-9. [Weighted mean. *National Institute of Standards and Technology*.](https://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weigmean.pdf)
-10. [Weighted standard deviation. *National Institute of Standards and Technology*.](https://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weightsd.pdf)
-11. [CVMatrix. Fast computation of possibly weighted and possibly centered/scaled training set kernel matrices in a cross-validation setting.](https://github.com/sm00thix/cvmatrix)
 
 
 ## Funding
