@@ -22,6 +22,7 @@ import joblib
 import numpy as np
 import numpy.linalg as la
 import numpy.typing as npt
+import scipy.linalg as sla
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
@@ -42,13 +43,11 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            # Compute pinv in float64 to avoid SVD convergence issues on macOS
-            # with float32 (Accelerate framework LAPACK), then cast back.
-            Q_slice = self.Q[:, :key].T
-            orig_dtype = Q_slice.dtype
-            self._cache[key] = la.pinv(
-                Q_slice.astype(np.float64), rcond=self.eps
-            ).astype(orig_dtype)
+            # Use scipy's pinv with gesvd driver to avoid SVD convergence issues
+            # on macOS with float32 (Accelerate framework's gesdd is unstable).
+            self._cache[key] = sla.pinv(
+                self.Q[:, :key].T, rtol=self.eps, lapack_driver="gesvd"
+            )
         return self._cache[key]
 
     def __iter__(self):
