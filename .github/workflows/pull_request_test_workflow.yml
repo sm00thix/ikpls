@@ -22,3 +22,21 @@ jobs:
       - uses: ./.github/actions/test
         with:
           PYTHON_VERSION: ${{ matrix.python-version }}
+      
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: coverage.xml
+          flag-name: ${{ matrix.os }}-python-${{ matrix.python-version }}
+          parallel: true
+
+  finish:
+    needs: test_package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finish Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          parallel-finished: true

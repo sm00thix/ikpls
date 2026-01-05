@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2024
 
 ### Added
-- Sample-weighted PLS functionality using weighted mean and standard deviation as formulated by National Institute of Science and Technology (NIST).
+- Sample-weighted PLS functionality based on Becker and Ismail [[1]](#referemces) using weighted mean and standard deviation as formulated by National Institute of Science and Technology (NIST) [[2,3]](#references).
 - Weighted cross-validation methods for both NumPy and JAX implementations via their respective `cross_validate` methods.
 - Support for weighted IKPLS modeling across all implementations.
 
@@ -47,13 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive documentation and examples.
 
 ### Features
-- IKPLS Algorithm #1 and #2 implementations based on Dayal and MacGregor (1997) [[1]](#references).
+- IKPLS Algorithm #1 and #2 implementations based on Dayal and MacGregor (1997) [[1]](#references-1).
 - Numerically stable and fast PLS modeling.
 - GPU and TPU acceleration via JAX.
 - Compatible with scikit-learn's `cross_validate` function.
 - Fast cross-validation based on Engstrøm's and Jensen's algorithm [[2]](#references-1) and implementation [[3]](#references-1).
 ## References
 
-1. Dayal, B. S. and MacGregor, J. F. (1997). Improved PLS algorithms. *Journal of Chemometrics*, 11(1), 73-85.
-2. Engstrøm, O.-C. G. and Jensen, M. H. (2025). Fast Partition-Based Cross-Validation With Centering and Scaling for $\mathbf{X}^\mathbf{T}\mathbf{X}$ and $\mathbf{X}^\mathbf{T}\mathbf{Y}$
-3. CVMatrix. Fast computation of possibly weighted and possibly centered/scaled training set kernel matrices in a cross-validation setting.
+1. [Dayal, B. S. and MacGregor, J. F. (1997). Improved PLS algorithms. *Journal of Chemometrics*, 11(1), 73-85.](https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23?)
+2. [Engstrøm, O.-C. G. and Jensen, M. H. (2025). Fast Partition-Based Cross-Validation With Centering and Scaling for $\mathbf{X}^\mathbf{T}\mathbf{X}$ and $\mathbf{X}^\mathbf{T}\mathbf{Y}$](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008)
+3. [CVMatrix. Fast computation of possibly weighted and possibly centered/scaled training set kernel matrices in a cross-validation setting.](https://github.com/sm00thix/cvmatrix)

@@ -1,18 +1,20 @@
 # Improved Kernel Partial Least Squares (IKPLS) and Fast Cross-Validation
 
-[![PyPI Version](https://img.shields.io/pypi/v/ikpls.svg)](https://pypi.python.org/pypi/ikpls/)
+[![PyPI Version](https://img.shields.io/pypi/v/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
-[![Python Versions](https://img.shields.io/pypi/pyversions/ikpls.svg)](https://pypi.python.org/pypi/ikpls/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
 [![Pepy - Total Downloads](https://img.shields.io/pepy/dt/ikpls)](https://pepy.tech/project/ikpls/)
 
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
-[![License](https://img.shields.io/pypi/l/ikpls.svg)](https://pypi.python.org/pypi/ikpls/)
+[![License](https://img.shields.io/pypi/l/ikpls)](https://pypi.python.org/pypi/ikpls/)
 
 [![Documentation Status](https://readthedocs.org/projects/ikpls/badge/?version=latest)](https://ikpls.readthedocs.io/en/latest/?badge=latest)
 
 [![Tests Status](https://github.com/Sm00thix/IKPLS/actions/workflows/test_workflow.yml/badge.svg)](https://github.com/Sm00thix/IKPLS/actions/workflows/test_workflow.yml)
+
+[![Test Coverage](https://coveralls.io/repos/github/sm00thix/ikpls/badge.svg?branch=main)](https://coveralls.io/github/sm00thix/ikpls?branch=main)
 
 [![Package Status](https://github.com/Sm00thix/IKPLS/actions/workflows/package_workflow.yml/badge.svg)](https://github.com/Sm00thix/IKPLS/actions/workflows/package_workflow.yml)
 
@@ -35,6 +37,8 @@ implementations subclass scikit-learn's BaseEstimator, they can be used with sci
   Our JAX implementations are **end-to-end differentaible** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
 - Use our combination of IKPLS with Engstrøm's and Jensen's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
 - Use any of the above in combination with **sample-weighted PLS** [[8]](#references).
+- Use our NumPy or JAX implementations for dimensionality reduction to score space with their respective transform methods.
+- Use our NumPy or JAX implementations for reconstruction of original space from score space with their respective inverse_transform methods.
 
 The documentation is available at
 <https://ikpls.readthedocs.io/en/latest/>; examples can be found at
@@ -71,7 +75,7 @@ The JAX implementations support running on both CPU, GPU, and TPU.
 
 - To enable Google Cloud TPU execution, install JAX with:
     ```shell
-    pip3 install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+    pip3 install -U "jax[tpu]"
     ```
 
 These are typical installation instructions that will be what most users are looking for.
