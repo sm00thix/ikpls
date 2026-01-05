@@ -31,5 +31,5 @@ runs:
 
     - name: Run tests
       run: |
-        poetry run pytest tests -k "test_dtype_pls_2_m_greater_k" --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
+        poetry run pytest tests --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
       shell: bash
