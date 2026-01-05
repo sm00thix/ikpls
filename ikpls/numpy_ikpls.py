@@ -44,7 +44,9 @@ class _R_Y_Mapping(Mapping):
         if key not in self._cache:
             # self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
             self._cache[key] = la.lstsq(
-                self.Q[:, :key].T, np.eye(self.Q.shape[0]), rcond=self.eps
+                self.Q[:, :key],
+                np.eye(self.Q.shape[0], dtype=self.Q.dtype),
+                rcond=self.eps,
             )[0].T
         return self._cache[key]
 
