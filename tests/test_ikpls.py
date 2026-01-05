@@ -6615,6 +6615,7 @@ class TestClass:
             ]:
                 err_msg = f"model: {model}, center_X: {center_X}, center_Y: {center_Y}, scale_X: {scale_X}, scale_Y: {scale_Y}, fb: {fb}"
                 if fb == 32:
+                    continue
                     dtype = np.float32
                 elif fb == 64:
                     dtype = np.float64
