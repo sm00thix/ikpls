@@ -6612,7 +6612,7 @@ class TestClass:
             )
             # Skip NumPy PLS on macOS with float32 due to SVD convergence issues
             # in the Accelerate framework's LAPACK implementation.
-            if not (sys.platform == "darwin" and fb == 32):
+            if not (sys.platform == "darwin" and fb == 32 and Y.shape[1] >= X.shape[1]):
                 for model in [
                     np_pls_alg_1,
                     np_pls_alg_2,
