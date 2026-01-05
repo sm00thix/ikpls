@@ -22,8 +22,8 @@ import joblib
 import numpy as np
 import numpy.linalg as la
 import numpy.typing as npt
-import scipy.linalg as sla
 from joblib import Parallel, delayed
+from scipy.linalg import svd as scipy_svd
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
@@ -43,11 +43,13 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            # Use scipy's pinv with gesvd driver to avoid SVD convergence issues
-            # on macOS with float32 (Accelerate framework's gesdd is unstable).
-            self._cache[key] = sla.pinv(
-                self.Q[:, :key].T, rtol=self.eps, lapack_driver="gesvd"
-            )
+            # Compute pinv using scipy's SVD with gesvd driver to avoid convergence
+            # issues on macOS with float32 (Accelerate framework's gesdd is unstable).
+            a = self.Q[:, :key].T
+            u, s, vh = scipy_svd(a, full_matrices=False, lapack_driver="gesvd")
+            cutoff = self.eps * s[0]
+            s_inv = np.where(s > cutoff, 1 / s, 0)
+            self._cache[key] = (vh.T * s_inv) @ u.T
         return self._cache[key]
 
     def __iter__(self):
