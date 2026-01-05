@@ -36,6 +36,7 @@ class _R_Y_Mapping(Mapping):
 
     def __init__(self, QT: jax.Array) -> None:
         self.QT = QT
+        self.eps = jnp.finfo(QT.dtype).eps
         self._valid_keys = set(range(1, QT.shape[0] + 1))
         self._cache = {}
 
@@ -45,7 +46,7 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.QT.shape[0]}."
             )
         if key not in self._cache:
-            self._cache[key] = jla.pinv(self.QT[:key])
+            self._cache[key] = jla.pinv(self.QT[:key], rcond=self.eps)
         return self._cache[key]
 
     def __iter__(self):

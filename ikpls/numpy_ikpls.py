@@ -32,6 +32,7 @@ class _R_Y_Mapping(Mapping):
 
     def __init__(self, Q: npt.NDArray[np.floating]) -> None:
         self.Q = Q
+        self.eps = np.finfo(Q.dtype).eps
         self._valid_keys = set(range(1, Q.shape[1] + 1))
         self._cache = {}
 
@@ -41,7 +42,7 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            self._cache[key] = la.pinv(self.Q[:, :key].T)
+            self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
         return self._cache[key]
 
     def __iter__(self):
