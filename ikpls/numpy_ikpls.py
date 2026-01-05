@@ -14,7 +14,6 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
-import platform
 import warnings
 from collections.abc import Callable, Hashable, Mapping
 from typing import Any, Iterable, Optional, Self, Tuple, Union
@@ -36,11 +35,6 @@ class _R_Y_Mapping(Mapping):
         self.eps = np.finfo(Q.dtype).eps
         self._valid_keys = set(range(1, Q.shape[1] + 1))
         self._cache = {}
-        self.upcast = (
-            platform.system() == "Darwin" and Q.dtype == np.float32
-        )  # Mac OS only
-        if self.upcast:
-            self.eps = np.finfo(np.float64).eps
 
     def __getitem__(self, key):
         if key not in self._valid_keys:
@@ -48,12 +42,10 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            if self.upcast:
-                self._cache[key] = la.pinv(
-                    self.Q[:, :key].T.astype(np.float64), rcond=self.eps
-                ).astype(self.Q.dtype)
-            else:
-                self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
+            # self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
+            self._cache[key] = la.lstsq(
+                self.Q[:, :key].T, np.eye(self.Q.shape[0]), rcond=self.eps
+            )[0].T
         return self._cache[key]
 
     def __iter__(self):
