@@ -36,7 +36,11 @@ class _R_Y_Mapping(Mapping):
         self.eps = np.finfo(Q.dtype).eps
         self._valid_keys = set(range(1, Q.shape[1] + 1))
         self._cache = {}
-        self.upcast = platform.system() == "Darwin" and Q.dtype == np.float32
+        self.upcast = (
+            platform.system() == "Darwin" and Q.dtype == np.float32
+        )  # Mac OS only
+        if self.upcast:
+            self.eps = np.finfo(np.float64).eps
 
     def __getitem__(self, key):
         if key not in self._valid_keys:
