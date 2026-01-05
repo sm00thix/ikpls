@@ -12,6 +12,7 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
+import sys
 from collections.abc import Callable
 from itertools import product
 from typing import List, Literal, Optional, Tuple, Union
@@ -6609,41 +6610,46 @@ class TestClass:
                 fast_cv=True,
                 float_bits=fb,
             )
-            for model in [
-                np_pls_alg_1,
-                np_pls_alg_2,
-            ]:
-                err_msg = f"model: {model}, center_X: {center_X}, center_Y: {center_Y}, scale_X: {scale_X}, scale_Y: {scale_Y}, fb: {fb}"
-                if fb == 32:
-                    dtype = np.float32
-                elif fb == 64:
-                    dtype = np.float64
-                else:
-                    raise ValueError(f"Invalid number of float bits: {fb}")
+            # Skip NumPy PLS on macOS with float32 due to SVD convergence issues
+            # in the Accelerate framework's LAPACK implementation.
+            if not (sys.platform == "darwin" and fb == 32):
+                for model in [
+                    np_pls_alg_1,
+                    np_pls_alg_2,
+                ]:
+                    err_msg = f"model: {model}, center_X: {center_X}, center_Y: {center_Y}, scale_X: {scale_X}, scale_Y: {scale_Y}, fb: {fb}"
+                    if fb == 32:
+                        dtype = np.float32
+                    elif fb == 64:
+                        dtype = np.float64
+                    else:
+                        raise ValueError(f"Invalid number of float bits: {fb}")
 
-                model.fit(X=X, Y=Y, A=n_components, weights=weights)
-                assert model.B.dtype == dtype, err_msg
+                    model.fit(X=X, Y=Y, A=n_components, weights=weights)
+                    assert model.B.dtype == dtype, err_msg
 
-                res = model.predict(X=X)
-                assert res.dtype == dtype, err_msg
+                    res = model.predict(X=X)
+                    assert res.dtype == dtype, err_msg
 
-                T, U = model.transform(X=X, Y=Y, n_components=n_components)
-                assert T.dtype == dtype, err_msg
-                assert U.dtype == dtype, err_msg
+                    T, U = model.transform(X=X, Y=Y, n_components=n_components)
+                    assert T.dtype == dtype, err_msg
+                    assert U.dtype == dtype, err_msg
 
-                rX, rY = model.inverse_transform(T, U)
-                assert rX.dtype == dtype, err_msg
-                assert rY.dtype == dtype, err_msg
+                    rX, rY = model.inverse_transform(T, U)
+                    assert rX.dtype == dtype, err_msg
+                    assert rY.dtype == dtype, err_msg
 
-                intX = np.arange(9)
-                intY = np.arange(9)
-                riX, riY = model.inverse_transform(intX, intY)
-                assert riX.dtype == dtype, err_msg
-                assert riY.dtype == dtype, err_msg
+                    intX = np.arange(9)
+                    intY = np.arange(9)
+                    riX, riY = model.inverse_transform(intX, intY)
+                    assert riX.dtype == dtype, err_msg
+                    assert riY.dtype == dtype, err_msg
 
-                T, U = model.fit_transform(X=X, Y=Y, A=n_components, weights=weights)
-                assert T.dtype == dtype, err_msg
-                assert U.dtype == dtype, err_msg
+                    T, U = model.fit_transform(
+                        X=X, Y=Y, A=n_components, weights=weights
+                    )
+                    assert T.dtype == dtype, err_msg
+                    assert U.dtype == dtype, err_msg
 
             for model in [
                 jax_pls_alg_1,

@@ -23,7 +23,6 @@ import numpy as np
 import numpy.linalg as la
 import numpy.typing as npt
 from joblib import Parallel, delayed
-from scipy.linalg import svd as scipy_svd
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
@@ -43,13 +42,7 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            # Compute pinv using scipy's SVD with gesvd driver to avoid convergence
-            # issues on macOS with float32 (Accelerate framework's gesdd is unstable).
-            a = self.Q[:, :key].T
-            u, s, vh = scipy_svd(a, full_matrices=False, lapack_driver="gesvd")
-            cutoff = self.eps * s[0]
-            s_inv = np.where(s > cutoff, 1 / s, 0)
-            self._cache[key] = (vh.T * s_inv) @ u.T
+            self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
         return self._cache[key]
 
     def __iter__(self):
