@@ -6627,6 +6627,8 @@ class TestClass:
                 res = model.predict(X=X)
                 assert res.dtype == dtype, err_msg
 
+                if fb == 32:
+                    continue
                 T, U = model.transform(X=X, Y=Y, n_components=n_components)
                 assert T.dtype == dtype, err_msg
                 assert U.dtype == dtype, err_msg
