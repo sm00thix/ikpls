@@ -42,7 +42,9 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
+            self._cache[key] = la.pinv(
+                self.Q[:, :key].T, rcond=self.eps * 10.0 * max(self.Q[:, :key].shape)
+            )
         return self._cache[key]
 
     def __iter__(self):
