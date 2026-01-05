@@ -42,9 +42,17 @@ class _R_Y_Mapping(Mapping):
                 f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
             )
         if key not in self._cache:
-            self._cache[key] = la.pinv(
-                self.Q[:, :key].T, rcond=self.eps * 10.0 * max(self.Q[:, :key].shape)
-            )
+            Q_subset = self.Q[:, :key].T
+            gram = Q_subset @ Q_subset.T
+            # Use Cholesky factorization
+            L = la.cholesky(gram)
+            # Solve L L^T x = Q_subset for x, then result = x^T
+            temp = la.solve_triangular(L, Q_subset, lower=True)
+            result = la.solve_triangular(L.T, temp, lower=False).T
+            self._cache[key] = result
+            # self._cache[key] = la.pinv(
+            #     self.Q[:, :key].T, rcond=self.eps * 10.0 * max(self.Q[:, :key].shape)
+            # )
         return self._cache[key]
 
     def __iter__(self):
