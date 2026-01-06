@@ -34,10 +34,21 @@ jax = ["jax", "jaxlib"]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.pytest.ini_options]
 addopts = [
     "--typeguard-packages=ikpls",
     "--cov=ikpls",
     "--cov-report=xml",
     "--cov-report=html",
     "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+source = ["ikpls"]
+relative_files = true
+
+[tool.coverage.paths]
+source = [
+    "ikpls/",
+    "*/site-packages/ikpls/",
 ]
