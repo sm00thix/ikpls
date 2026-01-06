@@ -42,7 +42,7 @@ runs:
     - name: Run full tests (with JAX)
       if: ${{ inputs.INSTALL_JAX == 'true' }}
       run: |
-        poetry run pytest tests --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
+        poetry run pytest tests --ignore=tests/test_numpy_only.py --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
       shell: bash
 
     - name: Run numpy-only tests (without JAX)
