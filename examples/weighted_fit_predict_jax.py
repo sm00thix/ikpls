@@ -4,7 +4,8 @@ predicting on data. The script generates random input data and fits the IKPLS mo
 the data. It then demonstrates how to make predictions using the fitted model. The
 internal model parameters can also be accessed for further analysis.
 
-Note: The script assumes that the 'ikpls' package is installed and accessible.
+Note: The code assumes the availability of the `ikpls[jax]` package and its
+dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk

@@ -64,7 +64,30 @@ of the $\mathbf{X}$ and $\mathbf{Y}$ input matrices, convolution, or other prepr
 preprocessing can safely be applied before passing the data to the fast
 cross-validation algorithm.
 
-## Prerequisites
+## Installation
+
+- Install the package for Python3 using the following command:
+    ```shell
+    pip3 install ikpls
+    ```
+
+- Now you can import the NumPy implementations with:
+    ```python
+    from ikpls.numpy_ikpls import PLS as NpPLS
+    from ikpls.fast_cross_validation.numpy_ikpls import PLS as NpPLS_FastCV
+    ```
+
+- You can also install the optional JAX dependency to get JAX implementations of IKPLS
+    ```shell
+    pip3 install "ikpls[jax]"
+    ```
+- Now, you can import the JAX implementations with:
+    ```python
+    from ikpls.jax_ikpls_alg_1 import PLS as JAXPLS_Alg_1
+    from ikpls.jax_ikpls_alg_2 import PLS as JAXPLS_Alg_2
+    ```
+
+### Prerequisites for JAX
 
 The JAX implementations support running on both CPU, GPU, and TPU.
 
@@ -83,28 +106,13 @@ For customized installations, follow the instructions from the [JAX Installation
 Guide](https://jax.readthedocs.io/en/latest/installation.html).
 
 To ensure that JAX implementations use float64, set the environment
-variable JAX_ENABLE_X64=True as per the [Current
-Gotchas](https://github.com/google/jax#current-gotchas).
+variable ```JAX_ENABLE_X64=True``` as per the [Common
+Gotchas](https://docs.jax.dev/en/latest/notebooks/Common_Gotchas_in_JAX.html#double-64bit-precision).
 Alternatively, float64 can be enabled with the following function call:
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
 ```
-
-## Installation
-
-- Install the package for Python3 using the following command:
-    ```shell
-    pip3 install ikpls
-    ```
-
-- Now you can import the NumPy and JAX implementations with:
-    ```python
-    from ikpls.numpy_ikpls import PLS as NpPLS
-    from ikpls.jax_ikpls_alg_1 import PLS as JAXPLS_Alg_1
-    from ikpls.jax_ikpls_alg_2 import PLS as JAXPLS_Alg_2
-    from ikpls.fast_cross_validation.numpy_ikpls import PLS as NpPLS_FastCV
-    ```
 
 ## Quick Start
 

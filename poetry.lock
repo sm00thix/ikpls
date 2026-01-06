@@ -15,14 +15,14 @@ files = [
 
 [[package]]
 name = "cvmatrix"
-version = "3.1.5"
+version = "3.1.6"
 description = "Fast computation of possibly weighted and possibly centered/scaled training set kernel matrices in a cross-validation setting."
 optional = false
 python-versions = "<3.15,>=3.11"
 groups = ["main"]
 files = [
-    {file = "cvmatrix-3.1.5-py3-none-any.whl", hash = "sha256:bc62a4d5b3d7a47aa78382d2d857d7634a381e6d748850d7ef05ad5c368cf5a2"},
-    {file = "cvmatrix-3.1.5.tar.gz", hash = "sha256:99d3c651b607074652e77c555e0133f44492dbccfec9c83cb9950a747d824306"},
+    {file = "cvmatrix-3.1.6-py3-none-any.whl", hash = "sha256:c86c0821f564b784b2e2a5d400c8b91aa9394a41749e996c373b08fc4313f349"},
+    {file = "cvmatrix-3.1.6.tar.gz", hash = "sha256:63cabc1720b30d125773241ae3021eb5c9e78dfbc614a8753309778193c8b481"},
 ]
 
 [package.dependencies]
@@ -32,9 +32,10 @@ numpy = ">=2.0.0,<3.0.0"
 name = "jax"
 version = "0.8.2"
 description = "Differentiate, compile, and transform Numpy code."
-optional = false
+optional = true
 python-versions = ">=3.11"
 groups = ["main"]
+markers = "extra == \"jax\""
 files = [
     {file = "jax-0.8.2-py3-none-any.whl", hash = "sha256:d0478c5dc74406441efcd25731166a65ee782f13c352fa72dc7d734351909355"},
     {file = "jax-0.8.2.tar.gz", hash = "sha256:1a685ded06a8223a7b52e45e668e406049dbbead02873f2b5a4d881ba7b421ae"},
@@ -64,9 +65,10 @@ xprof = ["xprof"]
 name = "jaxlib"
 version = "0.8.2"
 description = "XLA library for JAX"
-optional = false
+optional = true
 python-versions = ">=3.11"
 groups = ["main"]
+markers = "extra == \"jax\""
 files = [
     {file = "jaxlib-0.8.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:490bf0cb029c73c65c9431124b86cdc95082dbc1fb76fc549d24d75da33e5454"},
     {file = "jaxlib-0.8.2-cp311-cp311-manylinux_2_27_aarch64.whl", hash = "sha256:bb89be452b1b808d3f88fc01c415b364a260be4cc7ac120c038009f6150a32dc"},
@@ -113,9 +115,10 @@ files = [
 name = "ml-dtypes"
 version = "0.5.4"
 description = "ml_dtypes is a stand-alone implementation of several NumPy dtype extensions used in machine learning."
-optional = false
+optional = true
 python-versions = ">=3.9"
 groups = ["main"]
+markers = "extra == \"jax\""
 files = [
     {file = "ml_dtypes-0.5.4-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:b95e97e470fe60ed493fd9ae3911d8da4ebac16bd21f87ffa2b7c588bf22ea2c"},
     {file = "ml_dtypes-0.5.4-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b4b801ebe0b477be666696bda493a9be8356f1f0057a57f1e35cd26928823e5a"},
@@ -254,9 +257,10 @@ files = [
 name = "opt-einsum"
 version = "3.4.0"
 description = "Path optimization of einsum functions."
-optional = false
+optional = true
 python-versions = ">=3.8"
 groups = ["main"]
+markers = "extra == \"jax\""
 files = [
     {file = "opt_einsum-3.4.0-py3-none-any.whl", hash = "sha256:69bb92469f86a1565195ece4ac0323943e83477171b91d24c35afe028a90d7cd"},
     {file = "opt_einsum-3.4.0.tar.gz", hash = "sha256:96ca72f1b886d148241348783498194c577fa30a8faac108586b14f1ba4473ac"},
@@ -437,7 +441,10 @@ notebook = ["ipywidgets (>=6)"]
 slack = ["slack-sdk"]
 telegram = ["requests"]
 
+[extras]
+jax = ["jax", "jaxlib"]
+
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11, <3.15"
-content-hash = "7c5eff9b6de7bc9ee0d53e33d09904352180fbdd1c10fc8a69b10a3a70cc571e"
+content-hash = "c9b58f8a1f2a705fd349b4a8268a9346f9e7a8d8427b3dfc53c3ed69174ca7ce"

@@ -11,6 +11,9 @@ The code includes the following functions:
 - `convolve_fit_mse`: A function to differentiate the mean squared error with respect
     to the weights of the convolution filter.
 
+Note: The code assumes the availability of the `ikpls[jax]` package and its
+dependencies.
+
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """

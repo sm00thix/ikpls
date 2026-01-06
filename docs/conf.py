@@ -66,7 +66,13 @@ autodoc_default_options = {
 
 
 def maybe_skip_member(app, what, name, obj, skip, options):
-    if name in ["set_fit_request", "set_predict_request", "_abc_impl"]:
+    if name in [
+        "set_fit_request",
+        "set_predict_request",
+        "set_transform_request",
+        "set_inverse_transform_request",
+        "_abc_impl",
+    ]:
         return True
     return skip
 
