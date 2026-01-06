@@ -109,11 +109,17 @@ def test_fast_cv_numpy_pls_alg_1():
     X = rng.standard_normal((100, 10))
     Y = rng.standard_normal((100, 2))
 
-    pls = FastCVPLS(algorithm=1)
-    pls.fit(X, Y, A=5)
+    # Create 5-fold split indices
+    folds = np.repeat(np.arange(5), 20)
 
-    assert pls.B is not None
-    assert pls.B.shape == (5, 10, 2)
+    def rmse(Y_true, Y_pred):
+        return np.sqrt(np.mean((Y_true - Y_pred) ** 2, axis=0))
+
+    pls = FastCVPLS(algorithm=1)
+    results = pls.cross_validate(X, Y, A=5, folds=folds, metric_function=rmse)
+
+    assert results is not None
+    assert len(results) == 5  # 5 folds
 
 
 def test_fast_cv_numpy_pls_alg_2():
@@ -124,11 +130,17 @@ def test_fast_cv_numpy_pls_alg_2():
     X = rng.standard_normal((100, 10))
     Y = rng.standard_normal((100, 2))
 
-    pls = FastCVPLS(algorithm=2)
-    pls.fit(X, Y, A=5)
+    # Create 5-fold split indices
+    folds = np.repeat(np.arange(5), 20)
 
-    assert pls.B is not None
-    assert pls.B.shape == (5, 10, 2)
+    def rmse(Y_true, Y_pred):
+        return np.sqrt(np.mean((Y_true - Y_pred) ** 2, axis=0))
+
+    pls = FastCVPLS(algorithm=2)
+    results = pls.cross_validate(X, Y, A=5, folds=folds, metric_function=rmse)
+
+    assert results is not None
+    assert len(results) == 5  # 5 folds
 
 
 def test_numpy_pls_cross_validate():
@@ -140,13 +152,13 @@ def test_numpy_pls_cross_validate():
     Y = rng.standard_normal((100, 2))
 
     # Create 5-fold split indices
-    splits = np.repeat(np.arange(5), 20)
+    folds = np.repeat(np.arange(5), 20)
 
     def rmse(Y_true, Y_pred):
         return np.sqrt(np.mean((Y_true - Y_pred) ** 2, axis=0))
 
     pls = PLS(algorithm=1)
-    results = pls.cross_validate(X, Y, A=5, cv_splits=splits, metric_function=rmse)
+    results = pls.cross_validate(X, Y, A=5, folds=folds, metric_function=rmse)
 
     assert results is not None
     assert len(results) == 5  # 5 folds
