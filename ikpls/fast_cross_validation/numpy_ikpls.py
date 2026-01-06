@@ -25,7 +25,7 @@ from joblib import Parallel, delayed
 
 
 class PLS:
-    """
+    r"""
     Implements fast cross-validation with partial least-squares regression using
     Improved Kernel PLS by Dayal and MacGregor:
     https://arxiv.org/abs/2401.13185

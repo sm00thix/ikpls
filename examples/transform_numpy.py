@@ -5,7 +5,7 @@ generates random input data and fits the IKPLS model to the data. It then demons
 how to make transformations to score space using the fitted model. The internal model
 parameters can also be accessed for further analysis.
 
-Note: The script assumes that the 'ikpls' package is installed and accessible.
+Note: The code assumes the availability of the `ikpls` package and its dependencies.
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk

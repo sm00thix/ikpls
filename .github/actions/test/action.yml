@@ -5,6 +5,10 @@ inputs:
   PYTHON_VERSION:
     description: Test Python version
     required: true
+  INSTALL_JAX:
+    description: Whether to install JAX extras (true/false)
+    required: false
+    default: 'true'
 
 runs:
   using: "composite"
@@ -20,7 +24,13 @@ runs:
         python -m pip install poetry
       shell: bash
 
-    - name: Install project dependencies
+    - name: Install project dependencies (with JAX)
+      if: ${{ inputs.INSTALL_JAX == 'true' }}
+      run: poetry install --all-extras
+      shell: bash
+
+    - name: Install project dependencies (without JAX)
+      if: ${{ inputs.INSTALL_JAX != 'true' }}
       run: poetry install
       shell: bash
 
@@ -29,7 +39,14 @@ runs:
         poetry add --group dev pandas pytest flake8 pytest-cov typeguard
       shell: bash
 
-    - name: Run tests
+    - name: Run full tests (with JAX)
+      if: ${{ inputs.INSTALL_JAX == 'true' }}
       run: |
-        poetry run pytest tests --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
+        poetry run pytest tests --ignore=tests/test_numpy_only.py --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
+      shell: bash
+
+    - name: Run numpy-only tests (without JAX)
+      if: ${{ inputs.INSTALL_JAX != 'true' }}
+      run: |
+        poetry run pytest tests/test_numpy_only.py -v --cov=ikpls --cov-report=xml
       shell: bash

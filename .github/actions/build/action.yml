@@ -28,7 +28,7 @@ runs:
       shell: bash
 
     - name: Install IKPLS dependencies
-      run: poetry install
+      run: poetry install --all-extras
       shell: bash
       
     - name: Build a binary wheel and a source tarball

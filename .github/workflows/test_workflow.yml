@@ -10,7 +10,8 @@ on:
             - 'pyproject.toml'
 
 jobs:
-    test_package:
+    # Full test suite with JAX installed
+    test_package_with_jax:
         runs-on: ${{ matrix.os }}
         strategy:  
             fail-fast: false  
@@ -21,18 +22,42 @@ jobs:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/test
               with:
-                    PYTHON_VERSION: ${{ matrix.python-version }}
+                PYTHON_VERSION: ${{ matrix.python-version }}
+                INSTALL_JAX: 'true'
             
             - name: Upload coverage to Coveralls
               uses: coverallsapp/github-action@v2
               with:
                 github-token: ${{ secrets.GITHUB_TOKEN }}
                 path-to-lcov: coverage.xml
-                flag-name: ${{ matrix.os }}-python-${{ matrix.python-version }}
+                flag-name: ${{ matrix.os }}-python-${{ matrix.python-version }}-jax
+                parallel: true
+
+    # Test numpy-only installation (without JAX)
+    test_package_numpy_only:
+        runs-on: ${{ matrix.os }}
+        strategy:  
+            fail-fast: false  
+            matrix:  
+                os: [ubuntu-latest, windows-latest, macos-latest]
+                python-version: ["3.11", "3.12", "3.13", "3.14"]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/test
+              with:
+                PYTHON_VERSION: ${{ matrix.python-version }}
+                INSTALL_JAX: 'false'
+            
+            - name: Upload coverage to Coveralls
+              uses: coverallsapp/github-action@v2
+              with:
+                github-token: ${{ secrets.GITHUB_TOKEN }}
+                path-to-lcov: coverage.xml
+                flag-name: ${{ matrix.os }}-python-${{ matrix.python-version }}-numpy-only
                 parallel: true
 
     finish:
-        needs: test_package
+        needs: [test_package_with_jax, test_package_numpy_only]
         runs-on: ubuntu-latest
         steps:
             - name: Finish Coveralls

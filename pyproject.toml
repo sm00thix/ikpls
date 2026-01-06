@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ikpls"
-version = "3.1.0"
+version = "4.0.0"
 description = "Improved Kernel PLS and Fast Cross-Validation."
 authors = ["sm00thix <oleemail@icloud.com>"]
 maintainers = ["sm00thix <oleemail@icloud.com>"]
@@ -18,21 +18,37 @@ classifiers = [
 [tool.poetry.dependencies]
 python = ">=3.11, <3.15"
 numpy = ">=2.0.0"
-jax = ">=0.5.0"
-jaxlib = ">=0.5.0"
 scikit-learn = ">=1.5.0"
 tqdm = ">=4.66.1"
 joblib = ">=1.3.2"
 cvmatrix = ">=3.0.0"
 
+# Optional JAX dependencies
+jax = {version = ">=0.5.0", optional = true}
+jaxlib = {version = ">=0.5.0", optional = true}
+
+[tool.poetry.extras]
+jax = ["jax", "jaxlib"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.pytest.ini_options]
 addopts = [
     "--typeguard-packages=ikpls",
     "--cov=ikpls",
     "--cov-report=xml",
     "--cov-report=html",
     "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+source = ["ikpls"]
+relative_files = true
+
+[tool.coverage.paths]
+source = [
+    "ikpls/",
+    "*/site-packages/ikpls/",
 ]
