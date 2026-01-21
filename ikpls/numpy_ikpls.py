@@ -685,10 +685,8 @@ class PLS(BaseEstimator):
                 w = eig_vecs[:, -1:]
             W[i] = w.squeeze()
 
-            # Step 3
-            r = np.copy(w)
-            for j in range(i):
-                r = r - P[j].reshape(-1, 1).T @ w * R[j].reshape(-1, 1)
+            # Step 3)
+            r = w - R[:i].T @ (P[:i] @ w)
             R[i] = r.squeeze()
 
             # Step 4
