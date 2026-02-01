@@ -1,3 +1,4 @@
-ikpls
+ikpls[jax]
+sphinx
 sphinx-rtd-theme
 myst-parser
