@@ -174,19 +174,19 @@ class PLS:
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
 
-        W : Array of shape (A, K)
+        W : Array of shape (K, A)
             PLS weights matrix for X.
 
-        P : Array of shape (A, K)
+        P : Array of shape (K, A)
             PLS loadings matrix for X.
 
-        Q : Array of shape (A, M)
+        Q : Array of shape (M, A)
             PLS Loadings matrix for Y.
 
-        R : Array of shape (A, K)
+        R : Array of shape (K, A)
             PLS weights matrix to compute scores T directly from original X.
 
-        T : None or Array of shape (A, N_train)
+        T : None or Array of shape (N_train, A)
             PLS scores matrix of X. Only Returned for Improved Kernel PLS Algorithm #1.
             If `self.algorithm` is 2, then this will be None.
 
@@ -287,9 +287,7 @@ class PLS:
             WT[i] = w.squeeze()
 
             # Step 3
-            r = np.copy(w)
-            for j in range(i):
-                r = r - PT[j].reshape(-1, 1).T @ w * RT[j].reshape(-1, 1)
+            r = w - RT[:i].T @ (PT[:i] @ w)
             RT[i] = r.squeeze()
 
             # Step 4
