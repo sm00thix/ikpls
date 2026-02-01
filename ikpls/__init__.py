@@ -1,4 +1,4 @@
-__version__ = "4.0.1"
+__version__ = "4.0.1.post1"
 __all__ = ["fast_cross_validation", "numpy_ikpls"]
 
 from . import fast_cross_validation, numpy_ikpls
