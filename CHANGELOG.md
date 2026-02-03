@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.0.0] - 2025-01-05
+## [4.0.0] - 2026-01-05
 ### Added
 - It is now possible to do `import ikpls` followed by `ikpls.submodule` or `import ikpls.submodule` where `submodule` is any of `numpy_ikpls`, `fast_cross_validation`, `jax_ikpls_alg_1`, `jax_ikpls_alg_2`, and `fast_cross_validation.numpy_ikpls`.
 
@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - To install only the NumPy implementations and their dependencies, execute `pip install ikpls`.
 - To install both the NumPy and JAX implementations and their dependencies, execute `pip install "ikpls[jax]"`.
 
-## [3.1.0] - 2025-01-05
+## [3.1.0] - 2026-01-05
 ### Added
 - `R_Y` attribute with Y rotations for all PLS implementations except fast cross-validation. `R_Y` is set and reset by fit but not computed until accessed at which point it is cached for future access. `R_Y` is a concrete Mapping accessing the Y rotations for a number of components, nc, is done by `R_Y[nc]` which returns an array of shape `(M, nc)`. Using `R_Y[A][:, :nc]` is generally NOT equivalent to `R_Y[nc]`. Here `M` is the number of columns in `Y`, and `A` is the maximum number of components that the PLS model was fitted with.
 - A `transform` method for all implementations that transforms $\mathbf{X}$ and/or $\mathbf{Y}$ to score space.
