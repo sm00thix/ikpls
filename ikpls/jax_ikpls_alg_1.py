@@ -267,7 +267,15 @@ class PLS(PLSBase):
         i: ArrayLike,
     ) -> Tuple[
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
-        Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+        Tuple[
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+        ],
     ]:
         """
         `lax.scan` body for Improved Kernel PLS Algorithm #1: computes a single
@@ -326,6 +334,7 @@ class PLS(PLSBase):
             q.reshape(M),
             r.reshape(K),
             t.reshape(-1),
+            step_2_res[1].reshape(()),
             b,
         )
         return (XTY, P, R, b), outs
@@ -356,10 +365,11 @@ class PLS(PLSBase):
         A: int
             Number of components in the PLS model.
 
-        max_stable_components : None
-            Always None for the JAX implementations: they do not track the underflow
-            point (no underflow warning is emitted). The NumPy implementations instead
-            set this to the number of numerically stable components.
+        max_stable_components : int
+            The number of leading components that are numerically stable (whose weight
+            norm did not underflow below machine epsilon); equals `A` when no underflow
+            occurs. Computed on-device with no host callback, so it is also returned by
+            `stateless_fit` and is therefore available per fit under `jax.vmap`.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
@@ -426,14 +436,20 @@ class PLS(PLSBase):
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
         self.A = A
-        self.B, W, P, Q, R, T, self.X_mean, self.Y_mean, self.X_std, self.Y_std = (
-            self.stateless_fit(
-                X,
-                Y,
-                A,
-                weights,
-            )
-        )
+        (
+            self.B,
+            W,
+            P,
+            Q,
+            R,
+            T,
+            max_stable_components,
+            self.X_mean,
+            self.Y_mean,
+            self.X_std,
+            self.Y_std,
+        ) = self.stateless_fit(X, Y, A, weights)
+        self.max_stable_components = int(max_stable_components)
         self.W = W.T
         self.P = P.T
         self.Q = Q.T
@@ -450,6 +466,7 @@ class PLS(PLSBase):
         A: int,
         weights: Optional[ArrayLike] = None,
     ) -> Tuple[
+        jax.Array,
         jax.Array,
         jax.Array,
         jax.Array,
@@ -503,6 +520,11 @@ class PLS(PLSBase):
             PLS scores matrix of X. IMPORTANT: If weights are provided, these are NOT
             the scores of X but instead weighted scores. In this case, scores can be
             computerd using transform.
+
+        max_stable_components : int
+            The number of leading components that are numerically stable (whose weight
+            norm did not underflow below machine epsilon); equals `A` when no underflow
+            occurs.
 
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None. If weights are
@@ -568,6 +590,11 @@ class PLS(PLSBase):
         def body(carry, i):
             return self._scan_body(X, M, K, A, carry, i)
 
-        _, (W, P, Q, R, T, B) = jax.lax.scan(body, init, jnp.arange(A))
+        _, (W, P, Q, R, T, norms, B) = jax.lax.scan(body, init, jnp.arange(A))
 
-        return B, W, P, Q, R, T, X_mean, Y_mean, X_std, Y_std
+        # On-device count of numerically stable components (no host callback): the
+        # number of leading components whose weight norm did not underflow below eps.
+        underflow = jnp.isclose(norms, 0, atol=self.eps, rtol=0)
+        max_stable_components = jnp.where(jnp.any(underflow), jnp.argmax(underflow), A)
+
+        return B, W, P, Q, R, T, max_stable_components, X_mean, Y_mean, X_std, Y_std

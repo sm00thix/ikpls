@@ -13,6 +13,7 @@ E-mail: ole.e@di.ku.dk
 """
 
 import sys
+import warnings
 from collections.abc import Callable
 from itertools import product
 from typing import List, Literal, Optional, Tuple, Union
@@ -2212,10 +2213,20 @@ class TestClass:
                 show_progress=False,
             )
         elif isinstance(pls_model, (JAX_Alg_1, JAX_Alg_2)):
-            # The JAX fit likewise emits no underflow warning; assert it completes (the
-            # unstable high-order components are computed but not flagged).
+            # The JAX fit emits no underflow warning, but it still tracks
+            # `max_stable_components` on-device (computed without a host callback). For
+            # constant Y the residual underflows immediately, so fewer than `A`
+            # components are numerically stable.
             for _ in range(2):
-                pls_model.fit(X=X, Y=Y, A=n_components)
+                with warnings.catch_warnings(record=True) as record:
+                    warnings.simplefilter("always")
+                    pls_model.fit(X=X, Y=Y, A=n_components)
+                # The "weight close to zero" underflow warning must NOT be emitted by
+                # the JAX fit (other incidental numerical warnings are allowed).
+                assert not any(
+                    "Weight is close to zero" in str(w.message) for w in record
+                )
+                assert pls_model.A > pls_model.max_stable_components
         elif isinstance(pls_model, NpPLS):
             msg = "Weight is close to zero."
             with pytest.warns(UserWarning, match=msg) as record:

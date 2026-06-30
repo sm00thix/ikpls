@@ -828,8 +828,31 @@ class PLSBase(abc.ABC):
         A: int,
         weights: Optional[ArrayLike] = None,
     ) -> Union[
-        Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
-        Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+        Tuple[
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            Optional[jax.Array],
+            Optional[jax.Array],
+            Optional[jax.Array],
+            Optional[jax.Array],
+        ],
+        Tuple[
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            Optional[jax.Array],
+            Optional[jax.Array],
+            Optional[jax.Array],
+            Optional[jax.Array],
+        ],
     ]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -875,6 +898,11 @@ class PLSBase(abc.ABC):
 
         T : Array of shape (A, N)
             PLS scores matrix of X. Only Returned for Improved Kernel PLS Algorithm #1.
+
+        max_stable_components : int
+            The number of leading components that are numerically stable (whose weight
+            norm did not underflow below machine epsilon); equals `A` when no underflow
+            occurs.
 
         X_mean : Array of shape (1, K) or None
             Mean of the predictor variables `center_X` is True, otherwise None.
@@ -928,10 +956,11 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
-        max_stable_components : None
-            Always None for the JAX implementations: they do not track the underflow
-            point (no underflow warning is emitted). The NumPy implementations instead
-            set this to the number of numerically stable components.
+        max_stable_components : int
+            The number of leading components that are numerically stable (whose weight
+            norm did not underflow below machine epsilon); equals `A` when no underflow
+            occurs. Computed on-device with no host callback, so it is also returned by
+            `stateless_fit` and is therefore available per fit under `jax.vmap`.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.

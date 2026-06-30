@@ -184,7 +184,8 @@ class PLS:
             return f._scan_body(operand, M, K, A, carry, i)
 
         # Both algorithms' scan bodies stack the regression coefficients ``B`` as the
-        # last output element (Algorithm #1: W, P, Q, R, T, B; Algorithm #2: W, P, Q, R, B).
+        # last output element (Algorithm #1: W, P, Q, R, T, norm, B; Algorithm #2:
+        # W, P, Q, R, norm, B), so outs[-1] is B.
         _, outs = jax.lax.scan(body, init, jnp.arange(A))
         return outs[-1]
 
