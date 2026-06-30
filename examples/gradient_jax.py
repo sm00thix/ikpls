@@ -110,7 +110,8 @@ if __name__ == "__main__":
 
     # We will use IKPLS Algorithm #1 for this example.
     # The interface for IKPLS Algorithm #2 is identical.
-    diff_pls_alg_1 = JAX_Alg_1(differentiable=True, verbose=True)
+    # The JAX implementations are always reverse-mode differentiable.
+    pls_alg_1 = JAX_Alg_1(verbose=True)
 
     # Compute values and gradients for the conv_filter using mean squared error as the
     # loss function and IKPLS Algorithm #1 as the PLS algorithm with exactly 20
@@ -119,7 +120,7 @@ if __name__ == "__main__":
     # Compute the gradient of the mean_squared_error of Y_true and Y_pred (with 20
     # components) with respect to the weights of the convolution filter.
     grad_fun = jax.grad(
-        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, diff_pls_alg_1, A=A, n_components=A),
+        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, pls_alg_1, A=A, n_components=A),
         argnums=0,
     )
     grad_alg_1 = grad_fun(conv_filter)
@@ -133,7 +134,7 @@ if __name__ == "__main__":
     # Compute the gradient of the mean_squared_error of Y_true and Y_pred (from 1 to 20
     # components) with respect to the weights of the convolution filter.
     jac_fun = jax.jacfwd(
-        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, diff_pls_alg_1, A=A, n_components=None),
+        convolve_fit_mse(jnp_X, jnp_Y, jnp_w, pls_alg_1, A=A, n_components=None),
         argnums=0,
     )
     jac_alg_1 = jac_fun(conv_filter)

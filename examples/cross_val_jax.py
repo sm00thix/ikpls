@@ -67,10 +67,11 @@ def mse_per_component_and_best_components(
 
 
 if __name__ == "__main__":
-    # NOTE: Every time a training or validation split has a different size from the
-    # previously encountered one, recompilation will occur. This is because the JIT
-    # compiler must generate a new function for each unique input shape.
-    # Thus, if all splits have the same shape, JIT compilation happens only once.
+    # NOTE: cross_validate batches the folds with jax.vmap, grouping folds by
+    # validation-set size so that each group has a fixed shape. One compilation happens
+    # per distinct validation-set size (so equal-size splits, e.g. balanced k-fold or
+    # leave-one-out, compile once). The JAX implementation emits no underflow warning
+    # in any path (single fit or cross-validation).
 
     N = 100  # Number of samples.
     K = 50  # Number of features.
@@ -108,6 +109,12 @@ if __name__ == "__main__":
         metric_function=mse_per_component_and_best_components,
         metric_names=metric_names,
         weights=None,
+        # cross_validate batches the folds with jax.vmap (grouped by validation-set size
+        # so shapes are fixed). `batch_size` caps how many folds are vmapped together;
+        # lower it to bound peak memory when there are many folds and/or large K (each
+        # fold materializes its training rows). `None` (the default) vmaps all folds of
+        # a given size at once.
+        batch_size=None,
     )
 
     """

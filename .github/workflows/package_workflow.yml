@@ -26,6 +26,10 @@ jobs:
                 name: python-package-distributions
                 path: dist/
             - uses: pypa/gh-action-pypi-publish@release/v1
+              with:
+                # Don't fail if this version is already on PyPI (e.g. when the
+                # package workflow is re-run after a successful publish).
+                skip-existing: true
     github_release:
         needs: publish_package
         runs-on: ubuntu-latest

@@ -25,7 +25,7 @@ def main():
     parser.add_argument(
         "-model",
         type=str,
-        help="Model to use. Must be either 'sk', 'np1', 'np2', 'fastnp1, 'fastnp2', 'jax1', 'jax2', 'diffjax1', 'diffjax2'. Note that fastnp1 and fastnp2 only support cross-validation and not single fits.",
+        help="Model to use. Must be either 'sk', 'np1', 'np2', 'fastnp1, 'fastnp2', 'jax1', 'jax2'. Note that fastnp1 and fastnp2 only support cross-validation and not single fits.",
     )
     parser.add_argument("-n_components", type=int, help="Number of components to use.")
     parser.add_argument(
@@ -77,27 +77,9 @@ def main():
                 center_X=False, center_Y=False, scale_X=False, scale_Y=False
             )
             name = "JAX Improved Kernel PLS Algorithm #2"
-        elif model == "diffjax1":
-            pls = JAX_PLS_Alg_1(
-                center_X=False,
-                center_Y=False,
-                scale_X=False,
-                scale_Y=False,
-                differentiable=True,
-            )
-            name = (
-                "JAX Improved Kernel PLS Algorithm #1 (backwards mode differentiable)"
-            )
-        elif model == "diffjax2":
-            pls = JAX_PLS_Alg_2(
-                center_X=False,
-                center_Y=False,
-                scale_X=False,
-                scale_Y=False,
-                reverse_differentiable=True,
-            )
-            name = (
-                "JAX Improved Kernel PLS Algorithm #2 (backwards mode differentiable)"
+        else:
+            raise ValueError(
+                f"Unknown JAX model: {model}. Must be one of 'jax1', 'jax2'."
             )
         if n_splits == 1:
             print(
@@ -160,7 +142,7 @@ def main():
             name = "NumPy Improved Kernel PLS Algorithm #2 (fast cross-validation)"
         else:
             raise ValueError(
-                f"Unknown model: {model}. Must be one of 'sk', 'np1', 'np2', 'fastnp1', 'fastnp2', 'jax1', 'jax2', 'diffjax1', 'diffjax2'."
+                f"Unknown model: {model}. Must be one of 'sk', 'np1', 'np2', 'fastnp1', 'fastnp2', 'jax1', 'jax2'."
             )
 
         if n_splits == 1:

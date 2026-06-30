@@ -17,11 +17,12 @@ from typing import Any, Iterable, Optional
 
 import joblib
 import numpy as np
-import numpy.linalg as la
 import numpy.typing as npt
 from cvmatrix.cvmatrix import CVMatrix
 from cvmatrix.partitioner import Partitioner
 from joblib import Parallel, delayed
+
+from ikpls._pls_steps import improved_kernel_pls_inner_loop
 
 
 class PLS:
@@ -213,24 +214,7 @@ class PLS:
             residual goes below machine epsilon.
         """
 
-        B = np.zeros(shape=(self.A, self.K, self.M), dtype=self.dtype)
-        WT = np.zeros(shape=(self.A, self.K), dtype=self.dtype)
-        PT = np.zeros(shape=(self.A, self.K), dtype=self.dtype)
-        QT = np.zeros(shape=(self.A, self.M), dtype=self.dtype)
-        RT = np.zeros(shape=(self.A, self.K), dtype=self.dtype)
-        W = WT.T
-        P = PT.T
-        Q = QT.T
-        R = RT.T
-
-        if self.algorithm == 1:
-            validation_size = validation_indices.size
-            TT = np.zeros(shape=(self.A, self.N - validation_size), dtype=self.dtype)
-            T = TT.T
-        else:
-            T = None
-
-        # If algorithm is 1, extract training set X
+        # Gather/downdate the (centered/scaled/weighted) training matrices for the fold.
         if self.algorithm == 1:
             training_indices = np.setdiff1d(
                 self.all_indices, validation_indices, assume_unique=True
@@ -250,70 +234,26 @@ class PLS:
                 training_X = training_X / training_X_std
             if training_sqrt_w is not None:
                 training_X = training_X * training_sqrt_w
-
+            training_XTX = None
         else:
             result = self.cvm.training_XTX_XTY(validation_indices)
             training_XTX, training_XTY = result[0]
             training_X_mean, training_X_std, training_Y_mean, training_Y_std = result[1]
+            training_X = None
 
-        # Execute Improved Kernel PLS steps 2-5
-        for i in range(self.A):
-            # Step 2
-            if self.M == 1:
-                norm = la.norm(training_XTY, ord=2)
-                if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                    self._weight_warning(i)
-                    break
-                w = training_XTY / norm
-            else:
-                if self.M < self.K:
-                    training_XTYTtraining_XTY = training_XTY.T @ training_XTY
-                    eig_vals, eig_vecs = la.eigh(training_XTYTtraining_XTY)
-                    q = eig_vecs[:, -1:]
-                    w = training_XTY @ q
-                    norm = la.norm(w)
-                    if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                        self._weight_warning(i)
-                        break
-                    w = w / norm
-                else:
-                    training_XTYYTX = training_XTY @ training_XTY.T
-                    eig_vals, eig_vecs = la.eigh(training_XTYYTX)
-                    norm = eig_vals[-1]
-                    if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                        self._weight_warning(i)
-                        break
-                    w = eig_vecs[:, -1:]
-            WT[i] = w.squeeze()
-
-            # Step 3
-            r = w - RT[:i].T @ (PT[:i] @ w)
-            RT[i] = r.squeeze()
-
-            # Step 4
-            if self.algorithm == 1:
-                t = training_X @ r
-                TT[i] = t.squeeze()
-                tTt = t.T @ t
-                p = (t.T @ training_X).T / tTt
-            elif self.algorithm == 2:
-                rtraining_XTX = r.T @ training_XTX
-                tTt = rtraining_XTX @ r
-                p = rtraining_XTX.T / tTt
-            if self.M == 1:
-                q = norm / tTt
-            elif 1 < self.M < self.K:
-                q = q * np.sqrt(eig_vals[-1]) / tTt
-            else:
-                q = (r.T @ training_XTY).T / tTt
-            PT[i] = p.squeeze()
-            QT[i] = q.squeeze()
-
-            # Step 5
-            training_XTY = training_XTY - (p @ q.T) * tTt
-
-            # Compute regression coefficients
-            B[i] = B[i - 1] + r @ q.T
+        # Execute Improved Kernel PLS steps 2-5 (shared with the standard fit).
+        B, W, P, Q, R, T = improved_kernel_pls_inner_loop(
+            self.algorithm,
+            self.A,
+            self.K,
+            self.M,
+            training_XTY,
+            X=training_X,
+            XTX=training_XTX,
+            dtype=self.dtype,
+            eps=self.eps,
+            weight_warning=self._weight_warning,
+        )
 
         # Return PLS matrices and training set statistics
         return (
@@ -520,19 +460,6 @@ class PLS:
         values in `folds`. The keys and values of `metrics` will be sorted in the
         same order.
         """
-
-        # X = np.asarray(X, dtype=self.dtype)
-        # Y = np.asarray(Y, dtype=self.dtype)
-        # if Y.ndim == 1:
-        #     Y = Y.reshape(-1, 1)
-        # if weights is not None:
-        #     weights = np.asarray(weights, dtype=self.dtype)
-        #     if weights.ndim == 1:
-        #         weights = weights.reshape(-1, 1)
-        #     if self.algorithm == 1:
-        #         self.sqrt_weights = np.sqrt(weights)
-        # else:
-        #     self.sqrt_weights = None
 
         self.cvm = CVMatrix(
             center_X=self.center_X,

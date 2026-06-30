@@ -61,13 +61,6 @@ class PLS(PLSBase):
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
 
-    differentiable: bool, default=False
-        Whether to make the implementation end-to-end differentiable. The
-        differentiable version is slightly slower. Results among the two versions are
-        identical. If this is True, `fit` and `stateless_fit` will not issue a warning
-        if the residual goes below machine epsilon, and `max_stable_components` will
-        not be set.
-
     verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
@@ -89,7 +82,6 @@ class PLS(PLSBase):
         ddof: int = 1,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
-        differentiable: bool = False,
         verbose: bool = False,
     ) -> None:
         self.name = "Improved Kernel PLS Algorithm #1"
@@ -101,7 +93,6 @@ class PLS(PLSBase):
             ddof=ddof,
             copy=copy,
             dtype=dtype,
-            differentiable=differentiable,
             verbose=verbose,
         )
         self.name += " #1"
@@ -266,93 +257,87 @@ class PLS(PLSBase):
         q = self._step_4_compute_q(r, XTY, tTt, M, K, norm, q, largest_eigval)
         return tTt, p, q, t
 
-    @partial(jax.jit, static_argnums=(0, 1, 5, 6))
-    def _main_loop_body(
+    def _scan_body(
         self,
-        A: int,
-        i: int,
         X: jax.Array,
-        XTY: jax.Array,
         M: int,
         K: int,
-        P: jax.Array,
-        R: jax.Array,
-    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        A: int,
+        carry: Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        i: ArrayLike,
+    ) -> Tuple[
+        Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        Tuple[
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+        ],
+    ]:
         """
-        Execute the main loop body of Improved Kernel PLS Algorithm #1. This function
-        performs various steps of the PLS algorithm for each component.
+        `lax.scan` body for Improved Kernel PLS Algorithm #1: computes a single
+        component and appends its outputs to the scan's stacked results.
+
+        The constant operand `X` and the static `M`, `K`, `A` are captured by closure.
+        The carry is ``(XTY, P, R, Bprev)``:
+        ``XTY`` (K, M) is the deflated cross-covariance, ``P``/``R`` (A, K) are
+        the loadings/weights buffers the deflation reads from, and ``Bprev`` (K, M) is
+        the previous cumulative regression-coefficient matrix (zero for ``i == 0``).
 
         Parameters
         ----------
-        A : int
-            Number of components in the PLS model.
+        X : Array of shape (N, K)
+            Predictor variables (optionally sqrt-weight-scaled).
+
+        M, K, A : int
+            Number of response variables, predictor variables, and components (static).
+
+        carry : tuple of (XTY (K, M), P (A, K), R (A, K), Bprev (K, M))
+            The scan carry.
 
         i : int
-            Current component index.
-
-        X : Array of shape (N, K)
-            Predictor variables.
-
-        XTY : Array of shape (K, M)
-            Intermediate result used in the PLS algorithm.
-
-        M : int
-            Number of response variables.
-
-        K : int
-            Number of predictor variables.
-
-        P : Array of shape (K, A)
-            PLS loadings matrix for X.
-
-        R : Array of shape (K, A)
-            PLS weights matrix to compute scores T directly from original X.
+            The current component index (the scan loop variable; traced).
 
         Returns
         -------
-        XTY : Array of shape (K, M)
-            Updated intermediate result used in the PLS algorithm.
+        carry : tuple
+            Updated ``(XTY, P, R, b)``.
 
-        w : Array of shape (K, 1)
-            Updated intermediate result used in the PLS algorithm.
-
-        p : Array of shape (K, 1)
-            Updated intermediate result used in the PLS algorithm.
-
-        q : Array of shape (M, 1)
-            Updated intermediate result used in the PLS algorithm.
-
-        r : Array of shape (K, 1)
-            Updated intermediate result used in the PLS algorithm.
-
-        t : Array of shape (N, 1)
-            Updated intermediate result used in the PLS algorithm.
-
-
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
+        outputs : tuple of (w (K,), p (K,), q (M,), r (K,), t (N,), b (K, M))
+            Per-component outputs, stacked by `lax.scan` along a leading axis of length
+            ``A`` to yield W (A, K), P (A, K), Q (A, M), R (A, K), T (A, N), B (A, K, M).
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
-            print(f"_main_loop_body for {self.name} will be JIT compiled...")
+            print(f"_scan_body for {self.name} will be JIT compiled...")
+        XTY, P, R, Bprev = carry
         # step 2
         step_2_res = self._step_2(XTY, M, K)
         w = step_2_res[0]
-        norm = step_2_res[1]
-        if not self.differentiable:
-            self._weight_warning_callback(i, norm)
-        # step 3
-        if self.differentiable:
-            r = self._step_3(A, w, P, R)
-        else:
-            r = self._step_3(i, w, P, R)
+        # step 3: masked deflation (fixed-size and reverse-mode differentiable)
+        r = self._orthogonal_weight(i, w, P, R, A)
         # step 4
         tTt, p, q, t = self._step_4(X, XTY, r, M, K, *step_2_res[1:])
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
-        return XTY, w, p, q, r, t
+        # cumulative regression coefficients; Bprev is the zero row for i == 0
+        b = self._compute_regression_coefficients(Bprev, r, q)
+        P = P.at[i].set(p.reshape(K))
+        R = R.at[i].set(r.reshape(K))
+        # Use reshape (not squeeze) so the M == 1 axis is preserved: Q must stack to
+        # (A, 1), not (A,).
+        outs = (
+            w.reshape(K),
+            p.reshape(K),
+            q.reshape(M),
+            r.reshape(K),
+            t.reshape(-1),
+            step_2_res[1].reshape(()),
+            b,
+        )
+        return (XTY, P, R, b), outs
 
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
@@ -381,8 +366,10 @@ class PLS(PLSBase):
             Number of components in the PLS model.
 
         max_stable_components : int
-            Maximum number of components that can be used without the residual going
-            below machine epsilon. This is not set if `differentiable` is True.
+            The number of leading components that are numerically stable (whose weight
+            norm did not underflow below machine epsilon); equals `A` when no underflow
+            occurs. Computed on-device with no host callback, so it is also returned by
+            `stateless_fit` and is therefore available per fit under `jax.vmap`.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
@@ -430,12 +417,6 @@ class PLS(PLSBase):
         ValueError
             If `weights` are provided and not all weights are non-negative.
 
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
-
         See Also
         --------
         stateless_fit : Performs the same operation but returns the output matrices
@@ -455,16 +436,20 @@ class PLS(PLSBase):
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
         self.A = A
-        if not self.differentiable:
-            self.max_stable_components = A
-        self.B, W, P, Q, R, T, self.X_mean, self.Y_mean, self.X_std, self.Y_std = (
-            self.stateless_fit(
-                X,
-                Y,
-                A,
-                weights,
-            )
-        )
+        (
+            self.B,
+            W,
+            P,
+            Q,
+            R,
+            T,
+            max_stable_components,
+            self.X_mean,
+            self.Y_mean,
+            self.X_std,
+            self.Y_std,
+        ) = self.stateless_fit(X, Y, A, weights)
+        self.max_stable_components = int(max_stable_components)
         self.W = W.T
         self.P = P.T
         self.Q = Q.T
@@ -481,6 +466,7 @@ class PLS(PLSBase):
         A: int,
         weights: Optional[ArrayLike] = None,
     ) -> Tuple[
+        jax.Array,
         jax.Array,
         jax.Array,
         jax.Array,
@@ -535,6 +521,11 @@ class PLS(PLSBase):
             the scores of X but instead weighted scores. In this case, scores can be
             computerd using transform.
 
+        max_stable_components : int
+            The number of leading components that are numerically stable (whose weight
+            norm did not underflow below machine epsilon); equals `A` when no underflow
+            occurs.
+
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None. If weights are
             used, then this is the weighted mean.
@@ -555,12 +546,6 @@ class PLS(PLSBase):
         ------
         ValueError
             If `weights` are provided and not all weights are non-negative.
-
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
 
         See Also
         --------
@@ -585,8 +570,10 @@ class PLS(PLSBase):
         N, K = X.shape
         M = Y.shape[1]
 
-        # Initialize matrices
-        B, W, P, Q, R, T = self._get_initial_matrices(A, K, M, N)
+        # Initialize zero buffers. Only the P and R buffers seed the scan carry (the
+        # deflation reads prior rows of P/R); W, P, Q, R, T, B are (re)produced by the
+        # scan and stacked along the component axis.
+        _B0, _W0, P, _Q0, R, _T0 = self._get_initial_matrices(A, K, M, N)
 
         # step 1
         XTY = self._step_1(X, Y, weights)
@@ -594,15 +581,20 @@ class PLS(PLSBase):
         if weights is not None:
             X = self._get_sqrt_WX(X, weights)
 
-        # steps 2-6
-        for i in range(A):
-            XTY, w, p, q, r, t = self._main_loop_body(A, i, X, XTY, M, K, P, R)
-            W = W.at[i].set(w.squeeze())
-            P = P.at[i].set(p.squeeze())
-            Q = Q.at[i].set(q.squeeze())
-            R = R.at[i].set(r.squeeze())
-            T = T.at[i].set(t.squeeze())
-            b = self._compute_regression_coefficients(B[i - 1], r, q)
-            B = B.at[i].set(b)
+        # steps 2-6: run one component per scan step. Using lax.scan keeps the traced
+        # graph O(1) in A (the Python `for` loop unrolled it, making compile time scale
+        # linearly with the number of components). Carry = (XTY, P, R, Bprev),
+        # with Bprev=0 so the i==0 step reads the zero regression-coefficient row.
+        init = (XTY, P, R, jnp.zeros((K, M), dtype=self.dtype))
 
-        return B, W, P, Q, R, T, X_mean, Y_mean, X_std, Y_std
+        def body(carry, i):
+            return self._scan_body(X, M, K, A, carry, i)
+
+        _, (W, P, Q, R, T, norms, B) = jax.lax.scan(body, init, jnp.arange(A))
+
+        # On-device count of numerically stable components (no host callback): the
+        # number of leading components whose weight norm did not underflow below eps.
+        underflow = jnp.isclose(norms, 0, atol=self.eps, rtol=0)
+        max_stable_components = jnp.where(jnp.any(underflow), jnp.argmax(underflow), A)
+
+        return B, W, P, Q, R, T, max_stable_components, X_mean, Y_mean, X_std, Y_std

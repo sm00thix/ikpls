@@ -8,6 +8,7 @@ on:
             - 'tests/**'
             - '.github/**'
             - 'pyproject.toml'
+            - 'uv.lock'
 
 jobs:
     # Full test suite with JAX installed
@@ -32,6 +33,8 @@ jobs:
                 path-to-lcov: coverage.xml
                 flag-name: ${{ matrix.os }}-python-${{ matrix.python-version }}-jax
                 parallel: true
+                # A Coveralls outage must not fail the build.
+                fail-on-error: false
 
     # Test numpy-only installation (without JAX)
     test_package_numpy_only:
@@ -55,6 +58,8 @@ jobs:
                 path-to-lcov: coverage.xml
                 flag-name: ${{ matrix.os }}-python-${{ matrix.python-version }}-numpy-only
                 parallel: true
+                # A Coveralls outage must not fail the build.
+                fail-on-error: false
 
     finish:
         needs: [test_package_with_jax, test_package_numpy_only]
@@ -65,3 +70,5 @@ jobs:
               with:
                 github-token: ${{ secrets.GITHUB_TOKEN }}
                 parallel-finished: true
+                # A Coveralls outage must not fail the build.
+                fail-on-error: false

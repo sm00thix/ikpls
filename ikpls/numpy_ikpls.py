@@ -26,6 +26,8 @@ from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
+from ikpls._pls_steps import improved_kernel_pls_inner_loop
+
 
 class _R_Y_Mapping(Mapping):
     """A read-only Mapping that computes values lazily on first access."""
@@ -618,19 +620,6 @@ class PLS(BaseEstimator):
         N, K = X.shape
         M = Y.shape[1]
 
-        self.B = np.zeros(shape=(A, K, M), dtype=self.dtype)
-        W = np.zeros(shape=(A, K), dtype=self.dtype)
-        P = np.zeros(shape=(A, K), dtype=self.dtype)
-        Q = np.zeros(shape=(A, M), dtype=self.dtype)
-        R = np.zeros(shape=(A, K), dtype=self.dtype)
-        self.W = W.T
-        self.P = P.T
-        self.Q = Q.T
-        self.R = R.T
-        self.R_Y = _R_Y_Mapping(self.Q)
-        if self.algorithm == 1:
-            T = np.zeros(shape=(A, N), dtype=self.dtype)
-            self.T = T.T
         self.A = A
         self.max_stable_components = A
         self.N = N
@@ -657,62 +646,26 @@ class PLS(BaseEstimator):
             if weights is not None:
                 X = np.sqrt(weights) * X
 
-        for i in range(A):
-            # Step 2
-            if M == 1:
-                norm = la.norm(XTY, ord=2)
-                if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                    self._weight_warning(i)
-                    break
-                w = XTY / norm
-            elif M < K:
-                XTYTXTY = XTY.T @ XTY
-                eig_vals, eig_vecs = la.eigh(XTYTXTY)
-                q = eig_vecs[:, -1:]
-                w = XTY @ q
-                norm = la.norm(w, ord=2)
-                if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                    self._weight_warning(i)
-                    break
-                w = w / norm
-            else:
-                XTYYTX = XTY @ XTY.T
-                eig_vals, eig_vecs = la.eigh(XTYYTX)
-                norm = eig_vals[-1]
-                if np.isclose(norm, 0, atol=self.eps, rtol=0):
-                    self._weight_warning(i)
-                    break
-                w = eig_vecs[:, -1:]
-            W[i] = w.squeeze()
-
-            # Step 3)
-            r = w - R[:i].T @ (P[:i] @ w)
-            R[i] = r.squeeze()
-
-            # Step 4
-            if self.algorithm == 1:
-                t = X @ r
-                T[i] = t.squeeze()
-                tTt = t.T @ t
-                p = (t.T @ X).T / tTt
-            else:
-                rXTX = r.T @ XTX
-                tTt = rXTX @ r
-                p = rXTX.T / tTt
-            if M == 1:
-                q = norm / tTt
-            elif M < K:
-                q = q * np.sqrt(eig_vals[-1]) / tTt
-            else:
-                q = (r.T @ XTY).T / tTt
-            P[i] = p.squeeze()
-            Q[i] = q.squeeze()
-
-            # Step 5
-            XTY = XTY - (p @ q.T) * tTt
-
-            # Compute regression coefficients
-            self.B[i] = self.B[i - 1] + r @ q.T
+        # Execute Improved Kernel PLS steps 2-5 (shared with fast cross-validation).
+        self.B, W, P, Q, R, T = improved_kernel_pls_inner_loop(
+            self.algorithm,
+            A,
+            K,
+            M,
+            XTY,
+            X=X if self.algorithm == 1 else None,
+            XTX=XTX if self.algorithm == 2 else None,
+            dtype=self.dtype,
+            eps=self.eps,
+            weight_warning=self._weight_warning,
+        )
+        self.W = W
+        self.P = P
+        self.Q = Q
+        self.R = R
+        self.R_Y = _R_Y_Mapping(self.Q)
+        if self.algorithm == 1:
+            self.T = T
 
         return self
 
