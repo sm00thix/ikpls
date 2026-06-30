@@ -1242,6 +1242,16 @@ class TestClass:
             atol = np.finfo(np_pls_alg_1.dtype).eps
         except AttributeError:
             atol = 0
+        # Floor the absolute tolerance above machine epsilon. The matrices compared
+        # here contain near-zero elements (e.g. small regression coefficients
+        # ~1e-4) for which a pure relative tolerance is too strict: cross-backend
+        # BLAS differences (notably macOS Accelerate vs XLA-CPU) perturb such
+        # elements by a few 1e-8 in absolute terms, which exceeds rtol * |value|
+        # while remaining numerically negligible. A 1e-6 floor absorbs this
+        # platform round-off without masking meaningful divergences, which are
+        # orders of magnitude larger. The dtype eps is kept as a lower bound so
+        # wider-than-1e-6-eps dtypes (e.g. float16) are not tightened.
+        atol = max(atol, 1e-6)
         rtol = 1e-4
         # Regression matrices
         assert_allclose(
@@ -3682,7 +3692,20 @@ class TestClass:
         largest_split = np.max(
             [np.count_nonzero(splits == split) for split in unique_splits]
         )
-        n_components = min(X.shape[1], int(largest_split))
+        # Never fit more components than the SMALLEST training fold can support.
+        # When the largest fold is held out, its training set has only
+        # (n_samples - largest_split) rows, and column-centering removes one more
+        # degree of freedom, so that fold's design matrix has rank at most
+        # (n_samples - largest_split - 1). Components beyond this rank are
+        # numerically undefined: their validation RMSE is pure round-off that
+        # differs across BLAS backends (notably unstable on OpenBLAS when n < k),
+        # so argmin over them selects platform-dependent garbage and the
+        # best-RMSE comparison between implementations becomes flaky. Capping here
+        # keeps every cross-validated component well-defined on all platforms.
+        max_supportable_components = X.shape[0] - int(largest_split) - 1
+        n_components = min(
+            X.shape[1], int(largest_split), max_supportable_components
+        )
 
         for (
             center_X,
@@ -4062,10 +4085,6 @@ class TestClass:
         " multithreaded, so this will likely lead to a"
         " deadlock.",
     )
-    # We are probably fitting too many components here. But we do not care.
-    @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, match="Weight is close to zero"
-    )
     def test_center_scale_combinations_pls_1_n_less_k(self):
         """
         Description
@@ -4091,7 +4110,7 @@ class TestClass:
         splits = splits[::step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=0.15)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-7)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4104,10 +4123,6 @@ class TestClass:
         " incompatible with multithreaded code, and JAX is"
         " multithreaded, so this will likely lead to a"
         " deadlock.",
-    )
-    # We are probably fitting too many components here. But we do not care.
-    @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, match="Weight is close to zero"
     )
     def test_center_scale_combinations_pls_1_n_eq_k(self):
         """
@@ -4140,7 +4155,7 @@ class TestClass:
         splits = splits[: step_size_row * min_x_dim : step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=0.2)
+        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-6)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
