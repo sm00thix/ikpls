@@ -188,6 +188,7 @@ will find:
 
 -   [Fit and Predict with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_numpy.py)
 -   [Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
+-   [Fit and Predict on many datasets at once with JAX and `jax.vmap` (e.g. 10,000 independent fits and predicts).](https://github.com/Sm00thix/IKPLS/tree/main/examples/vmap_fit_predict_jax.py)
 -   [Cross-validate with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy.py)
 -   [Cross-validate with NumPy and scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy_sklearn.py)
 -   [Cross-validate with NumPy and fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_numpy.py)
