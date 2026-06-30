@@ -34,7 +34,7 @@ scikit-learn\'s** [[5]](#references) **ecosystem** of machine learning algorithm
 implementations subclass scikit-learn's BaseEstimator, they can be used with scikit-learn\'s
 [cross_validate](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_validate.html).
 - Use our JAX [[6]](#references) implementations on CPUs or **leverage powerful GPUs and TPUs for PLS modelling**.
-  Our JAX implementations are **end-to-end differentaible** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
+  Our JAX implementations are **end-to-end differentiable** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
 - Use our combination of NumPy and JAX IKPLS with Engstrøm's and Jensen's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
 - Use any of the above in combination with **sample-weighted PLS** [[8]](#references).
 - Use our NumPy or JAX implementations for dimensionality reduction to score space with their respective transform methods.

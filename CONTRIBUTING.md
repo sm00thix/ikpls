@@ -33,12 +33,13 @@ The sections below outline the steps in each case.
 4. Make sure the existing tests still work by following the instructions in [Run the test suite](#run-the-test-suite);
 5. Add your own tests (if necessary);
 6. If you added your own tests, make sure they pass by following the instructions in [Run the test suite](#run-the-test-suite);
-7. If your contribution is a performance enhancement, make sure to include benchmarks. See [Benchmarking](#benchmarking) for more information;
-8. Update or expand the documentation;
-9. Make sure the documentation builds without errors by following the instructions in [Build the documentation](#build-the-documentation);
-10. Check that you can build the package locally and that it passes twine check. See [Build from source](#build-from-source) for more information;
-11. [Push](http://rogerdudler.github.io/git-guide/) your feature branch to (your fork of) the IKPLS repository on GitHub;
-12. Create the pull request, e.g. following the instructions [here](https://help.github.com/articles/creating-a-pull-request/).
+7. Lint your changes by following the instructions in [Lint](#lint);
+8. If your contribution is a performance enhancement, make sure to include benchmarks. See [Benchmarking](#benchmarking) for more information;
+9. Update or expand the documentation;
+10. Make sure the documentation builds without errors by following the instructions in [Build the documentation](#build-the-documentation);
+11. Check that you can build the package locally and that it passes twine check. See [Build from source](#build-from-source) for more information;
+12. [Push](http://rogerdudler.github.io/git-guide/) your feature branch to (your fork of) the IKPLS repository on GitHub;
+13. Create the pull request, e.g. following the instructions [here](https://help.github.com/articles/creating-a-pull-request/).
 
 If you feel like you've made a valuable contribution, but you don't know how to write or run tests for it or generate the documentation, don't let this discourage you from making the pull request; we can help you! Just submit the pull request, but remember that you might be asked to append additional commits to your pull request.
 
@@ -76,6 +77,12 @@ IKPLS uses [uv](https://docs.astral.sh/uv/) to manage its dependencies and packa
     uvx twine check dist/*
     ```
 
+If you change the project's dependencies in `pyproject.toml`, refresh the committed lockfile and commit the updated `uv.lock`:
+
+```shell
+uv lock
+```
+
 ## Run the test suite
 
 To run the test suite, follow these steps:
@@ -109,6 +116,20 @@ To run the test suite, follow these steps:
     ```shell
     uv run pytest tests/test_numpy_only.py --cov=ikpls --cov-report=xml --cov-report=html
     ```
+
+## Lint
+
+The package is linted with [ruff](https://docs.astral.sh/ruff/) in CI. Reproduce the lint gate locally before pushing (this check must pass — it catches syntax errors, undefined names, etc.):
+
+```shell
+uvx ruff check ikpls/ --select=E9,F63,F7,F82 --output-format=full
+```
+
+CI additionally reports style statistics (line length, complexity), which do not fail the build:
+
+```shell
+uvx ruff check ikpls/ --select=E501,C901 --line-length=88 --exit-zero --statistics
+```
 
 ## Build the documentation
 
