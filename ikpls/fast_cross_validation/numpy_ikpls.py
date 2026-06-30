@@ -461,19 +461,6 @@ class PLS:
         same order.
         """
 
-        # X = np.asarray(X, dtype=self.dtype)
-        # Y = np.asarray(Y, dtype=self.dtype)
-        # if Y.ndim == 1:
-        #     Y = Y.reshape(-1, 1)
-        # if weights is not None:
-        #     weights = np.asarray(weights, dtype=self.dtype)
-        #     if weights.ndim == 1:
-        #         weights = weights.reshape(-1, 1)
-        #     if self.algorithm == 1:
-        #         self.sqrt_weights = np.sqrt(weights)
-        # else:
-        #     self.sqrt_weights = None
-
         self.cvm = CVMatrix(
             center_X=self.center_X,
             center_Y=self.center_Y,
