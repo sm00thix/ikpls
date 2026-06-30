@@ -18,6 +18,7 @@ E-mail: ocge@foss.dk
 
 import abc
 import warnings
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Any, Optional, Self, Tuple, Union
@@ -26,6 +27,7 @@ import jax
 import jax.experimental
 import jax.numpy as jnp
 import jax.numpy.linalg as jla
+import numpy as np
 from jax.typing import ArrayLike, DTypeLike
 from sklearn.exceptions import NotFittedError
 from tqdm import tqdm
@@ -107,13 +109,6 @@ class PLSBase(abc.ABC):
         will yield significantly worse results when using an increasing number of
         components due to propagation of numerical errors.
 
-    differentiable: bool, default=False
-        Whether to make the implementation end-to-end differentiable. The
-        differentiable version is slightly slower. Results among the two versions are
-        identical. If this is True, `fit` and `stateless_fit` will not issue a warning
-        if the residual goes below machine epsilon, and `max_stable_components` will
-        not be set.
-
     verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
@@ -135,7 +130,6 @@ class PLSBase(abc.ABC):
         ddof: int = 1,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
-        differentiable: bool = False,
         verbose: bool = False,
     ) -> None:
         self.center_X = center_X
@@ -146,7 +140,11 @@ class PLSBase(abc.ABC):
         self.copy = copy
         self.dtype = dtype
         self.eps = jnp.finfo(self.dtype).eps
-        self.differentiable = differentiable
+        # When True (the default for a directly-constructed model), `fit`/`stateless_fit`
+        # emit the ordered io_callback "weight close to zero" underflow warning and set
+        # `max_stable_components`. The vmapped cross-validation paths set this False on an
+        # internal clone, since the ordered io_callback is unsupported under jax.vmap.
+        self._warn_underflow = True
         self.verbose = verbose
         self.name = "Improved Kernel PLS Algorithm"
         self.A = None
@@ -196,7 +194,20 @@ class PLSBase(abc.ABC):
             self.max_stable_components = int(i)
 
     @partial(jax.jit, static_argnums=0)
-    def _weight_warning_callback(self, i: int, norm: DTypeLike):
+    def _weight_warning_callback(self, i: ArrayLike, norm: DTypeLike):
+        # `i` is the component index. It is a traced scalar (the `lax.scan` loop
+        # variable) when called from inside the fitting scan, and is materialized on
+        # the host by `io_callback` at runtime; hence the permissive `ArrayLike`
+        # annotation rather than `int`.
+        #
+        # NOTE (known limitation): `jax.experimental.io_callback(..., ordered=True)`
+        # is NOT supported under `jax.vmap`. The ordered callback works inside
+        # `lax.scan`/`lax.cond` (preserving program order), which is what the
+        # per-component fitting loop uses, and inside the Python fold loop of
+        # `cross_validate`. However, any future batched/vmapped fit (e.g. a vmap over
+        # cross-validation folds) MUST drop or relocate this callback -- for instance
+        # by returning the per-component `norm` array to the caller for inspection
+        # instead of warning from the host side here.
         close_to_zero = jnp.isclose(norm, 0, atol=jnp.finfo(self.dtype).eps, rtol=0)
         return jax.lax.cond(
             close_to_zero,
@@ -693,116 +704,59 @@ class PLSBase(abc.ABC):
             norm = eig_vals[-1]
         return w, norm
 
-    def _step_3_base(
-        self, i: int, w: jax.Array, P: jax.Array, R: jax.Array
+    @partial(jax.jit, static_argnums=(0, 5))
+    def _orthogonal_weight(
+        self,
+        i: ArrayLike,
+        w: jax.Array,
+        P: jax.Array,
+        R: jax.Array,
+        A: int,
     ) -> jax.Array:
         """
-        The third step of the PLS algorithm. Computes the orthogonal weight vectors.
+        The third step of the PLS algorithm. Computes the orthogonal weight vector
+        ``r = w - sum_{j < i} (P[j] . w) * R[j]`` as a single masked matmul.
+
+        This replaces the previous rolled `lax.fori_loop` deflation (and its separate
+        fixed-trip-count branch): the masked matmul is fixed-size and therefore
+        reverse-mode differentiable by construction, so a single code path now serves
+        both ordinary and gradient-based use. It is numerically identical to the rolled
+        deflation (the summation order differs only by floating-point round-off, well
+        within the algorithm's tolerance).
 
         Parameters
         ----------
         i : int
-            The current component number in the PLS algorithm.
+            The current component index. Traced (the `lax.scan` loop variable) at fit
+            time, hence the `ArrayLike` annotation.
 
         w : Array of shape (K, 1)
             The current weight vector.
 
         P : Array of shape (A, K)
-            The loadings matrix for the predictor variables.
+            The loadings buffer for the predictor variables. Rows ``j >= i`` are still
+            zero when component ``i`` is computed, so masking is equivalent to summing
+            all ``A`` rows; the explicit mask removes reliance on that invariant.
 
         R : Array of shape (A, K)
-            The weights matrix to compute scores `T` directly from the original
+            The buffer of weights that compute scores `T` directly from the original
             predictor variables.
+
+        A : int
+            Number of components (static); the deflation runs over all ``A`` rows.
 
         Returns
         -------
         r : Array of shape (K, 1)
             The orthogonal weight vector for the current component.
-
-        Notes
-        -----
-        This method computes the orthogonal weight vector `r` for the current component
-        in the PLS algorithm. It is a key step for calculating the loadings and weights
-        matrices.
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
-            print(f"_step_3 for {self.name} will be JIT compiled...")
-        r = jnp.copy(w)
-        r, P, w, R = jax.lax.fori_loop(0, i, self._step_3_body, (r, P, w, R))
+            print(f"_orthogonal_weight for {self.name} will be JIT compiled...")
+        proj = P @ w  # (A, 1) == [P[j] . w]_j
+        mask = (jnp.arange(A) < i)[:, None]  # (A, 1)
+        proj = jnp.where(mask, proj, 0.0)
+        r = w - R.T @ proj  # (K, 1)
         return r
-
-    def _step_3(self, i: int, w: jax.Array, P: jax.Array, R: jax.Array) -> jax.Array:
-        """
-        This is an API to the third step of the PLS algorithm. Computes the orthogonal
-        weight vectors.
-
-        Parameters
-        ----------
-        i : int
-            The current component number in the PLS algorithm.
-
-        w : Array of shape (K, 1)
-            The current weight vector.
-
-        P : Array of shape (A, K)
-            The loadings matrix for the predictor variables.
-
-        R : Array of shape (A, K)
-            The weights matrix to compute scores `T` directly from the original
-            predictor variables.
-
-        Returns
-        -------
-        r : Array of shape (K, 1)
-            The orthogonal weight vector for the current component.
-
-        Notes
-        -----
-        This method compiles _step_3_base which in turn computes the orthogonal weight
-        vector `r` for the current component in the PLS algorithm. It is a key step for
-        calculating the loadings and weights matrices.
-
-        See Also
-        --------
-        _step_3_base : The third step of the PLS algorithm.
-        """
-        if self.differentiable:
-            jax.jit(self._step_3_base, static_argnums=(0, 1))
-            return self._step_3_base(i, w, P, R)
-        jax.jit(self._step_3_base, static_argnums=0)
-        return self._step_3_base(i, w, P, R)
-
-    @partial(jax.jit, static_argnums=0)
-    def _step_3_body(
-        self, j: int, carry: Tuple[jax.Array, jax.Array, jax.Array, jax.Array]
-    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        """
-        The body of the third step of the PLS algorithm. Iteratively computes
-        orthogonal weight vectors.
-
-        Parameters
-        ----------
-        j : int
-            The current iteration index.
-
-        carry : Tuple of arrays
-            A tuple containing weight vectors and matrices used in the PLS algorithm.
-
-        Returns
-        -------
-        carry : Tuple of arrays
-            Updated weight vectors and matrices used in the PLS algorithm.
-
-        Notes
-        -----
-        This method is the body of the third step of the PLS algorithm and iteratively
-        computes orthogonal weight vectors used in the PLS algorithm.
-        """
-        if self.verbose and not jax.config.values["jax_disable_jit"]:
-            print(f"_step_3_body for {self.name} will be JIT compiled...")
-        r, P, w, R = carry
-        r = r - P[j].reshape(-1, 1).T @ w * R[j].reshape(-1, 1)
-        return r, P, w, R
 
     @abc.abstractmethod
     @partial(jax.jit, static_argnums=0)
@@ -902,11 +856,11 @@ class PLSBase(abc.ABC):
         return XTY - (p @ q.T) * tTt
 
     @abc.abstractmethod
-    @partial(jax.jit, static_argnums=0)
-    def _main_loop_body(self):
+    def _scan_body(self):
         """
-        Abstract method representing the main loop body in the PLS algorithm. This
-        method should be implemented in concrete PLS classes.
+        Abstract method representing the body of the `lax.scan` over components in the
+        PLS algorithm (one component per scan step). This method should be implemented
+        in concrete PLS classes.
 
         Parameters
         ----------
@@ -918,8 +872,12 @@ class PLSBase(abc.ABC):
 
         Notes
         -----
-        This method represents the main loop body of the PLS algorithm and should be
-        implemented in concrete PLS classes.
+        Concrete implementations have the signature ``(self, X_or_XTX, M, K, A, carry,
+        i) -> (carry, outputs)`` suitable for `jax.lax.scan`, where the carry is
+        ``(XTY, P, R, Bprev)`` and the constant operand (`X` for Algorithm #1,
+        `XTX` for Algorithm #2) plus the static `M`, `K`, `A` are captured by closure.
+        It must NOT be jitted on its own -- it is traced as part of the scan inside the
+        jitted `stateless_fit`.
         """
 
     @abc.abstractmethod
@@ -1559,6 +1517,7 @@ class PLSBase(abc.ABC):
             ],
         ] = None,
         weights: Optional[ArrayLike] = None,
+        batch_size: Optional[int] = None,
         show_progress=True,
     ) -> dict[str, Any]:
         """
@@ -1608,6 +1567,12 @@ class PLSBase(abc.ABC):
             Weights for each observation. If None, then all observations are weighted
             equally.
 
+        batch_size : int or None, optional, default=None
+            The folds are batched together with `jax.vmap` (grouped by validation-set
+            size so shapes are fixed). `batch_size` caps how many folds are vmapped at
+            once; lower it to bound peak memory when there are many folds and/or a large
+            number of features. `None` vmaps all folds of a given size together.
+
         Attributes
         ----------
         A : int
@@ -1623,13 +1588,8 @@ class PLSBase(abc.ABC):
         Raises
         ------
         ValueError
-            If `weights` are provided and not all weights are non-negative.
-
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
+            If `weights` are provided and not all weights are non-negative, or if
+            `batch_size` is not None and less than 1.
 
         See Also
         --------
@@ -1649,6 +1609,11 @@ class PLSBase(abc.ABC):
         -----
         This method is used to perform cross-validation on the PLS model with different
         data splits and evaluate its performance using user-defined metrics.
+
+        Note that, because `jax.vmap` is used, `metric_function` and
+        `preprocessing_function` must be JAX-traceable, and the per-fold "weight is
+        close to zero" underflow warning is not emitted during cross-validation (it is
+        emitted by a single `fit`).
         """
         X = jnp.asarray(X, dtype=self.dtype)
         Y = jnp.asarray(Y, dtype=self.dtype)
@@ -1656,14 +1621,41 @@ class PLSBase(abc.ABC):
             weights = jnp.asarray(weights, dtype=self.dtype)
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
+        if batch_size is not None and batch_size < 1:
+            raise ValueError("batch_size must be None or a positive integer.")
         self.A = A
-        folds = jnp.asarray(folds, dtype=jnp.int64)
-        metric_value_lists = [[] for _ in metric_names]
-        unique_splits = jnp.unique(folds)
-        for split in tqdm(unique_splits, disable=not show_progress):
-            train_idxs = jnp.nonzero(folds != split)[0]
-            val_idxs = jnp.nonzero(folds == split)[0]
-            metric_values = self._inner_cross_validate(
+
+        # Host-side fold/index bookkeeping (sorted unique splits, to preserve the
+        # returned per-fold ordering). The training set for a fold is the complement of
+        # its validation set.
+        folds = np.asarray(folds)
+        unique_splits = np.unique(folds)
+        per_fold = [
+            (np.nonzero(folds != split)[0], np.nonzero(folds == split)[0])
+            for split in unique_splits
+        ]
+
+        # The per-fold fit-predict-evaluate is batched over folds with jax.vmap (instead
+        # of a Python loop), which requires the fit to be free of the ordered io_callback
+        # underflow warning (unsupported under vmap). We therefore fit with a warning-free
+        # clone of this model (`_warn_underflow=False`); its results are numerically
+        # identical to a direct fit. Consequently, no "weight close to zero" warning is
+        # emitted during cross-validation.
+        if getattr(self, "_cv_fitter", None) is None:
+            self._cv_fitter = type(self)(
+                center_X=self.center_X,
+                center_Y=self.center_Y,
+                scale_X=self.scale_X,
+                scale_Y=self.scale_Y,
+                ddof=self.ddof,
+                copy=self.copy,
+                dtype=self.dtype,
+            )
+            self._cv_fitter._warn_underflow = False
+        fitter = self._cv_fitter
+
+        def fold_fn(train_idxs, val_idxs):
+            return fitter._inner_cross_validate(
                 X=X,
                 Y=Y,
                 train_idxs=train_idxs,
@@ -1673,6 +1665,43 @@ class PLSBase(abc.ABC):
                 preprocessing_function=preprocessing_function,
                 metric_function=metric_function,
             )
+
+        vmapped = jax.jit(jax.vmap(fold_fn))
+
+        # Group folds by validation-set size so vmap sees fixed shapes, and process each
+        # group in `batch_size` chunks to bound peak memory.
+        buckets: dict[int, list] = defaultdict(list)
+        for idx, (_train_idxs, val_idxs) in enumerate(per_fold):
+            buckets[val_idxs.shape[0]].append(idx)
+
+        metric_values_by_fold: list = [None] * len(per_fold)
+        n_batches = sum(
+            int(np.ceil(len(ids) / (batch_size or len(ids))))
+            for ids in buckets.values()
+        )
+        pbar = tqdm(total=n_batches, disable=not show_progress)
+        for ids in buckets.values():
+            train_stack = jnp.asarray(np.stack([per_fold[i][0] for i in ids]))
+            val_stack = jnp.asarray(np.stack([per_fold[i][1] for i in ids]))
+            bs = batch_size or len(ids)
+            for s in range(0, len(ids), bs):
+                chunk = ids[s : s + bs]
+                # `metric_function` may return any pytree (array, tuple, dict, ...);
+                # vmap stacks each leaf over the folds. Move to host, then slice out
+                # each fold's metric, preserving the pytree structure.
+                batched = jax.tree_util.tree_map(
+                    np.asarray,
+                    vmapped(train_stack[s : s + bs], val_stack[s : s + bs]),
+                )
+                for j, fold_idx in enumerate(chunk):
+                    metric_values_by_fold[fold_idx] = jax.tree_util.tree_map(
+                        lambda leaf, j=j: leaf[j], batched
+                    )
+                pbar.update(1)
+        pbar.close()
+
+        metric_value_lists = [[] for _ in metric_names]
+        for metric_values in metric_values_by_fold:  # sorted-split order
             metric_value_lists = self._update_metric_value_lists(
                 metric_value_lists, metric_names, metric_values
             )

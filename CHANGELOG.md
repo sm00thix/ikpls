@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] - 2026-06-30
+### Removed
+- **Breaking:** The `differentiable` constructor parameter of the JAX PLS classes (`jax_ikpls_alg_1.PLS`, `jax_ikpls_alg_2.PLS`, and `jax_ikpls_base.PLSBase`) has been removed. The `jax.lax.scan` fit and the fixed-size masked-matmul deflation make the JAX implementations end-to-end reverse-mode differentiable by construction, so the separate non-differentiable code path no longer exists and the flag is obsolete. A directly-constructed model still emits the "weight is close to zero" underflow warning and sets `max_stable_components`; the (vmapped) `cross_validate` and JAX fast cross-validation paths do not, since the ordered host callback is incompatible with `jax.vmap`. Code that passed `differentiable=...` must drop the argument.
+
+### Added
+- JAX fast cross-validation: `ikpls.fast_cross_validation.jax_ikpls.PLS`, a GPU/TPU-friendly counterpart to the NumPy fast cross-validation. It computes per-fold training matrices by rank-update via the `cvmatrix` JAX backend and batches the folds with `jax.vmap`. Supports both Improved Kernel PLS Algorithm #1 and #2 and takes a `batch_size` argument to bound memory. Requires `ikpls[jax]` and `cvmatrix[jax]`.
+
+### Changed
+- The JAX fit (`stateless_fit`) now iterates components with `jax.lax.scan` instead of an unrolled Python loop, making the traced graph O(1) in the number of components. Cold (compile-dominated) single fits are dramatically faster at large component counts; warm execution and all numerical results are unchanged.
+- The JAX `cross_validate` now batches folds with `jax.vmap` (with a new `batch_size` argument to bound memory) instead of looping over folds in Python, substantially accelerating cross-validation. The per-fold "weight is close to zero" underflow warning is no longer emitted during cross-validation (the ordered host callback is incompatible with `jax.vmap`); single fits still emit it.
+- Switched build and development tooling from Poetry to [uv](https://docs.astral.sh/uv/): the project now uses PEP 621 `[project]` metadata, the `hatchling` build backend, and a PEP 735 `[dependency-groups]` dev group (`poetry.lock` is replaced by `uv.lock`). The published package and its runtime dependencies are unchanged, except that the `jax` extra now explicitly requires `cvmatrix>=3.2.0` (the JAX fast cross-validation relies on the cvmatrix JAX backend introduced in that release).
+
 ## [4.0.0] - 2025-01-05
 ### Added
 - It is now possible to do `import ikpls` followed by `ikpls.submodule` or `import ikpls.submodule` where `submodule` is any of `numpy_ikpls`, `fast_cross_validation`, `jax_ikpls_alg_1`, `jax_ikpls_alg_2`, and `fast_cross_validation.numpy_ikpls`.

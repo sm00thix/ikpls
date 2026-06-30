@@ -61,13 +61,6 @@ class PLS(PLSBase):
         precision than float64 will yield significantly worse results when using an
         increasing number of components due to propagation of numerical errors.
 
-    differentiable: bool, default=False
-        Whether to make the implementation end-to-end differentiable. The
-        differentiable version is slightly slower. Results among the two versions are
-        identical. If this is True, `fit` and `stateless_fit` will not issue a warning
-        if the residual goes below machine epsilon, and `max_stable_components` will
-        not be set.
-
     verbose : bool, default=False
         If True, each sub-function will print when it will be JIT compiled. This can be
         useful to track if recompilation is triggered due to passing inputs with
@@ -89,7 +82,6 @@ class PLS(PLSBase):
         ddof: int = 1,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
-        differentiable: bool = False,
         verbose: bool = False,
     ) -> None:
         super().__init__(
@@ -100,7 +92,6 @@ class PLS(PLSBase):
             ddof=ddof,
             copy=copy,
             dtype=dtype,
-            differentiable=differentiable,
             verbose=verbose,
         )
         self.name += " #2"
@@ -226,83 +217,87 @@ class PLS(PLSBase):
         q = self._step_4_compute_q(r, XTY, tTt, M, K, norm, q, largest_eigval)
         return tTt, p, q
 
-    @partial(jax.jit, static_argnums=(0, 1, 5, 6))
-    def _main_loop_body(
+    def _scan_body(
         self,
-        A: int,
-        i: int,
         XTX: jax.Array,
-        XTY: jax.Array,
         M: int,
         K: int,
-        P: jax.Array,
-        R: jax.Array,
-    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        A: int,
+        carry: Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        i: ArrayLike,
+    ) -> Tuple[
+        Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+    ]:
         """
-        Execute the main loop body of Improved Kernel PLS Algorithm #2. This function
-        performs various steps of the PLS algorithm for each component.
+        `lax.scan` body for Improved Kernel PLS Algorithm #2: computes a single
+        component and appends its outputs to the scan's stacked results.
+
+        The constant operand `XTX` and the static `M`, `K`, `A` are captured by
+        closure. The carry is ``(XTY, P, R, Bprev)``: ``XTY`` (K, M) is the
+        deflated cross-covariance, ``P``/``R`` (A, K) are the loadings/weights
+        buffers the deflation reads from, and ``Bprev`` (K, M) is the previous
+        cumulative regression-coefficient matrix (zero for ``i == 0``). Algorithm #2
+        produces no `T` scores.
 
         Parameters
         ----------
-        A : int
-            Number of components in the PLS model.
+        XTX : Array of shape (K, K)
+            The (optionally weighted) Gram matrix of the predictor variables.
+
+        M, K, A : int
+            Number of response variables, predictor variables, and components (static).
+
+        carry : tuple of (XTY (K, M), P (A, K), R (A, K), Bprev (K, M))
+            The scan carry.
 
         i : int
-            Current iteration step.
-
-        XTX : Array of shape (K, K)
-            XTX product.
-
-        XTY : Array of shape (K, M)
-            XTY product.
-
-        M : int
-            Number of response variables.
-
-        K : int
-            Number of predictor variables.
-
-        P : Array of shape (K, K)
-            PLS loadings matrix for X.
-
-        R : Array of shape (K, A)
-            PLS weights matrix to compute scores T directly from original X.
+            The current component index (the scan loop variable; traced).
 
         Returns
         -------
-        XTY : Array of shape (K, M)
-            Updated XTY product.
+        carry : tuple
+            Updated ``(XTY, P, R, b)``.
 
-        w : Array of shape (K, K)
-            w matrix.
+        outputs : tuple of (w (K,), p (K,), q (M,), r (K,), b (K, M))
+            Per-component outputs, stacked by `lax.scan` along a leading axis of length
+            ``A`` to yield W (A, K), P (A, K), Q (A, M), R (A, K), B (A, K, M).
 
-        p : Array of shape (K, K)
-            p matrix.
-
-        q : Array of shape (K, M)
-            q matrix.
-
-        r : Array of shape (K, K)
-            PLS weight vector.
+        Warns
+        -----
+        UserWarning.
+            If the weight norm goes below machine epsilon during a direct fit. (The
+            warning is suppressed on the vmapped cross-validation path.)
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
-            print(f"_main_loop_body for {self.name} will be JIT compiled...")
+            print(f"_scan_body for {self.name} will be JIT compiled...")
+        XTY, P, R, Bprev = carry
         # step 2
         step_2_res = self._step_2(XTY, M, K)
         w = step_2_res[0]
         norm = step_2_res[1]
-        if not self.differentiable:
+        if self._warn_underflow:
             self._weight_warning_callback(i, norm)
-        # step 3
-        if self.differentiable:
-            r = self._step_3(A, w, P, R)
-        else:
-            r = self._step_3(i, w, P, R)
+        # step 3: masked deflation (fixed-size and reverse-mode differentiable)
+        r = self._orthogonal_weight(i, w, P, R, A)
         # step 4
         tTt, p, q = self._step_4(XTX, XTY, r, M, K, *step_2_res[1:])
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
-        return XTY, w, p, q, r
+        # cumulative regression coefficients; Bprev is the zero row for i == 0
+        b = self._compute_regression_coefficients(Bprev, r, q)
+        P = P.at[i].set(p.reshape(K))
+        R = R.at[i].set(r.reshape(K))
+        # Use reshape (not squeeze) so the M == 1 axis is preserved: Q must stack to
+        # (A, 1), not (A,).
+        outs = (
+            w.reshape(K),
+            p.reshape(K),
+            q.reshape(M),
+            r.reshape(K),
+            b,
+        )
+        return (XTY, P, R, b), outs
 
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, weights: Optional[ArrayLike] = None
@@ -332,7 +327,8 @@ class PLS(PLSBase):
 
         max_stable_components : int
             Maximum number of components that can be used without the residual going
-            below machine epsilon. This is not set if `differentiable` is True.
+            below machine epsilon. It is set by a direct fit but not on the (vmapped)
+            cross-validation path.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
@@ -402,7 +398,7 @@ class PLS(PLSBase):
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
         self.A = A
-        if not self.differentiable:
+        if self._warn_underflow:
             self.max_stable_components = A
         self.B, W, P, Q, R, self.X_mean, self.Y_mean, self.X_std, self.Y_std = (
             self.stateless_fit(
@@ -516,20 +512,23 @@ class PLS(PLSBase):
         _N, K = X.shape
         M = Y.shape[1]
 
-        # Initialize matrices
-        B, W, P, Q, R = self._get_initial_matrices(A, K, M)
+        # Initialize zero buffers. Only the P and R buffers seed the scan carry (the
+        # deflation reads prior rows of P/R); W, P, Q, R, B are (re)produced by the
+        # scan and stacked along the component axis.
+        _B0, _W0, P, _Q0, R = self._get_initial_matrices(A, K, M)
 
         # step 1
         XTX, XTY = self._step_1(X, Y, weights)
 
-        # steps 2-6
-        for i in range(A):
-            XTY, w, p, q, r = self._main_loop_body(A, i, XTX, XTY, M, K, P, R)
-            W = W.at[i].set(w.squeeze())
-            P = P.at[i].set(p.squeeze())
-            Q = Q.at[i].set(q.squeeze())
-            R = R.at[i].set(r.squeeze())
-            b = self._compute_regression_coefficients(B[i - 1], r, q)
-            B = B.at[i].set(b)
+        # steps 2-6: run one component per scan step. Using lax.scan keeps the traced
+        # graph O(1) in A (the Python `for` loop unrolled it, making compile time scale
+        # linearly with the number of components). Carry = (XTY, P, R, Bprev),
+        # with Bprev=0 so the i==0 step reads the zero regression-coefficient row.
+        init = (XTY, P, R, jnp.zeros((K, M), dtype=self.dtype))
+
+        def body(carry, i):
+            return self._scan_body(XTX, M, K, A, carry, i)
+
+        _, (W, P, Q, R, B) = jax.lax.scan(body, init, jnp.arange(A))
 
         return B, W, P, Q, R, X_mean, Y_mean, X_std, Y_std

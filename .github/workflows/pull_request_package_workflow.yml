@@ -8,6 +8,7 @@ on:
             - 'tests/**'
             - '.github/**'
             - 'pyproject.toml'
+            - 'uv.lock'
 
 jobs:
     build_package:

@@ -13,40 +13,29 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
       with:
         python-version: ${{ inputs.PYTHON_VERSION }}
 
-    - name: Install Poetry
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install poetry
-      shell: bash
-
     - name: Install project dependencies (with JAX)
       if: ${{ inputs.INSTALL_JAX == 'true' }}
-      run: poetry install --all-extras
+      run: uv sync --extra jax --group dev
       shell: bash
 
     - name: Install project dependencies (without JAX)
       if: ${{ inputs.INSTALL_JAX != 'true' }}
-      run: poetry install
-      shell: bash
-
-    - name: Install additional dependencies for testing
-      run: |
-        poetry add --group dev pandas pytest flake8 pytest-cov typeguard
+      run: uv sync --group dev
       shell: bash
 
     - name: Run full tests (with JAX)
       if: ${{ inputs.INSTALL_JAX == 'true' }}
       run: |
-        poetry run pytest tests --ignore=tests/test_numpy_only.py --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
+        uv run pytest tests --ignore=tests/test_numpy_only.py --typeguard-packages=ikpls --cov=ikpls --cov-report=xml
       shell: bash
 
     - name: Run numpy-only tests (without JAX)
       if: ${{ inputs.INSTALL_JAX != 'true' }}
       run: |
-        poetry run pytest tests/test_numpy_only.py -v --cov=ikpls --cov-report=xml
+        uv run pytest tests/test_numpy_only.py -v --cov=ikpls --cov-report=xml
       shell: bash

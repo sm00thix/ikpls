@@ -44,7 +44,7 @@ If you feel like you've made a valuable contribution, but you don't know how to 
 
 ## Build from source
 
-IKPLS uses [poetry](https://python-poetry.org/) to manage its dependencies and packaging. To build the package from source, follow these steps:
+IKPLS uses [uv](https://docs.astral.sh/uv/) to manage its dependencies and packaging. To build the package from source, follow these steps:
 
 1. Clone the repository:
 
@@ -58,57 +58,56 @@ IKPLS uses [poetry](https://python-poetry.org/) to manage its dependencies and p
     cd IKPLS
     ```
 
-3. Install poetry and twine:
+3. [Install uv](https://docs.astral.sh/uv/getting-started/installation/), e.g.:
 
     ```shell
-    pip3 install poetry
-    pip3 install twine
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-4. Install the dependencies:
+4. Build the package. uv builds in an isolated environment, so no separate dependency-install step is needed:
 
     ```shell
-    poetry install
+    uv build
     ```
 
-5. Build the package:
+5. Check the package with twine:
 
     ```shell
-    poetry build
-    ```
-
-6. Check the package with twine:
-
-    ```shell
-    twine check dist/*
+    uvx twine check dist/*
     ```
 
 ## Run the test suite
 
 To run the test suite, follow these steps:
 
-1. Install poetry:
+1. [Install uv](https://docs.astral.sh/uv/getting-started/installation/), e.g.:
 
     ```shell
-    pip3 install poetry
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-2. Install the project dependencies with poetry:
+2. Install the project together with its development dependencies. To run the full suite (including the JAX implementations), include the `jax` extra:
 
     ```shell
-    poetry install
+    uv sync --extra jax --group dev
     ```
 
-3. Install additional dependencies for testing:
+    To test the numpy-only installation instead, omit the extra:
 
     ```shell
-    poetry add --group dev pandas pytest flake8 pytest-cov typeguard
+    uv sync --group dev
     ```
 
-4. Now, the tests can be run with the following command:
+3. Now, the tests can be run. With the JAX extra installed, run the full suite except the numpy-only tests (which intentionally assert JAX is absent):
 
     ```shell
-    poetry run pytest tests --doctest-modules --junitxml=junit/test-results.xml --cov=ikpls/ --cov-report=xml --cov-report=html --typeguard-packages=ikpls/
+    uv run pytest tests --ignore=tests/test_numpy_only.py --typeguard-packages=ikpls --cov=ikpls --cov-report=xml --cov-report=html
+    ```
+
+    For a numpy-only installation, run only the numpy-only tests:
+
+    ```shell
+    uv run pytest tests/test_numpy_only.py --cov=ikpls --cov-report=xml --cov-report=html
     ```
 
 ## Build the documentation
