@@ -112,5 +112,9 @@ if __name__ == "__main__":
     print(f"  NumPy loop           : {numpy_time:8.3f} s")
     print(f"  JAX vmap (cold)      : {jax_cold_time:8.3f} s  (includes compilation)")
     print(f"  JAX vmap (warm)      : {jax_warm_time:8.3f} s")
+    print(
+        f"  cold speedup vs loop : {numpy_time / jax_cold_time:7.1f}x"
+        "  (one-shot, including compilation)"
+    )
     print(f"  warm speedup vs loop : {numpy_time / jax_warm_time:7.1f}x")
     print(f"  max |JAX - NumPy| over all predictions: {max_abs_diff:.2e}")
