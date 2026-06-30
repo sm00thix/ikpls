@@ -28,11 +28,10 @@ Both Improved Kernel PLS Algorithm #1 and #2 are supported, mirroring
 
 Algorithm #1 and #2 produce identical regression coefficients.
 
-Note that, unlike a single ``fit``, this fast cross-validation does not emit the
-"weight is close to zero" underflow warning: the warning relies on an ordered host
-callback that is incompatible with ``jax.vmap``. Degenerate folds (training sets with
-too few non-zero weights to compute centering/scaling statistics) are instead rejected
-up-front with a ``ValueError`` before the vmapped computation.
+Note that the JAX implementations do not emit any underflow warning, in any path
+(single ``fit`` or cross-validation). Degenerate folds (training sets with too few
+non-zero weights to compute centering/scaling statistics) are still rejected up-front
+with a ``ValueError`` before the vmapped computation.
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
@@ -145,9 +144,9 @@ class PLS:
         self.dtype = dtype
         self.name = f"Improved Kernel PLS Algorithm #{algorithm} (JAX fast CV)"
         # Internal fitter: fits B from the (already centered/scaled) training matrices via
-        # the algorithm's lax.scan. It runs under jax.vmap, where the ordered io_callback
-        # underflow warning is unsupported, so we suppress it (`_warn_underflow=False`);
-        # centering/scaling are handled by cvmatrix, so the fitter applies none.
+        # the algorithm's lax.scan (the JAX fit emits no host-side callbacks, so it runs
+        # under jax.vmap). Centering/scaling are handled by cvmatrix, so the fitter applies
+        # none.
         fitter_cls = _JaxAlg1 if algorithm == 1 else _JaxAlg2
         self._fitter = fitter_cls(
             center_X=False,
@@ -156,7 +155,6 @@ class PLS:
             scale_Y=False,
             dtype=dtype,
         )
-        self._fitter._warn_underflow = False
         self.A = None
         self.N = None
         self.K = None

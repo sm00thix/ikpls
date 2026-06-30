@@ -262,12 +262,6 @@ class PLS(PLSBase):
         outputs : tuple of (w (K,), p (K,), q (M,), r (K,), b (K, M))
             Per-component outputs, stacked by `lax.scan` along a leading axis of length
             ``A`` to yield W (A, K), P (A, K), Q (A, M), R (A, K), B (A, K, M).
-
-        Warns
-        -----
-        UserWarning.
-            If the weight norm goes below machine epsilon during a direct fit. (The
-            warning is suppressed on the vmapped cross-validation path.)
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_scan_body for {self.name} will be JIT compiled...")
@@ -275,9 +269,6 @@ class PLS(PLSBase):
         # step 2
         step_2_res = self._step_2(XTY, M, K)
         w = step_2_res[0]
-        norm = step_2_res[1]
-        if self._warn_underflow:
-            self._weight_warning_callback(i, norm)
         # step 3: masked deflation (fixed-size and reverse-mode differentiable)
         r = self._orthogonal_weight(i, w, P, R, A)
         # step 4
@@ -325,10 +316,10 @@ class PLS(PLSBase):
         A : int
             Number of components in the PLS model.
 
-        max_stable_components : int
-            Maximum number of components that can be used without the residual going
-            below machine epsilon. It is set by a direct fit but not on the (vmapped)
-            cross-validation path.
+        max_stable_components : None
+            Always None for the JAX implementations: they do not track the underflow
+            point (no underflow warning is emitted). The NumPy implementations instead
+            set this to the number of numerically stable components.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
@@ -373,12 +364,6 @@ class PLS(PLSBase):
         ValueError
             If `weights` are provided and not all weights are non-negative.
 
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
-
         See Also
         --------
         stateless_fit : Performs the same operation but returns the output matrices
@@ -398,8 +383,6 @@ class PLS(PLSBase):
             if jnp.any(weights < 0):
                 raise ValueError("Weights must be non-negative.")
         self.A = A
-        if self._warn_underflow:
-            self.max_stable_components = A
         self.B, W, P, Q, R, self.X_mean, self.Y_mean, self.X_std, self.Y_std = (
             self.stateless_fit(
                 X,
@@ -483,12 +466,6 @@ class PLS(PLSBase):
         ------
         ValueError
             If `weights` are provided and not all weights are non-negative.
-
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
 
         See Also
         --------

@@ -70,9 +70,8 @@ if __name__ == "__main__":
     # NOTE: cross_validate batches the folds with jax.vmap, grouping folds by
     # validation-set size so that each group has a fixed shape. One compilation happens
     # per distinct validation-set size (so equal-size splits, e.g. balanced k-fold or
-    # leave-one-out, compile once). The per-fold "weight is close to zero" underflow
-    # warning is not emitted during cross-validation (the ordered host callback is
-    # incompatible with jax.vmap); a single `fit` still emits it.
+    # leave-one-out, compile once). The JAX implementation emits no underflow warning
+    # in any path (single fit or cross-validation).
 
     N = 100  # Number of samples.
     K = 50  # Number of features.

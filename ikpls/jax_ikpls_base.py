@@ -17,14 +17,12 @@ E-mail: ocge@foss.dk
 """
 
 import abc
-import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Any, Optional, Self, Tuple, Union
 
 import jax
-import jax.experimental
 import jax.numpy as jnp
 import jax.numpy.linalg as jla
 import numpy as np
@@ -140,11 +138,6 @@ class PLSBase(abc.ABC):
         self.copy = copy
         self.dtype = dtype
         self.eps = jnp.finfo(self.dtype).eps
-        # When True (the default for a directly-constructed model), `fit`/`stateless_fit`
-        # emit the ordered io_callback "weight close to zero" underflow warning and set
-        # `max_stable_components`. The vmapped cross-validation paths set this False on an
-        # internal clone, since the ordered io_callback is unsupported under jax.vmap.
-        self._warn_underflow = True
         self.verbose = verbose
         self.name = "Improved Kernel PLS Algorithm"
         self.A = None
@@ -163,60 +156,6 @@ class PLSBase(abc.ABC):
         self.fitted_ = False
         if self.dtype == jnp.float64:
             jax.config.update("jax_enable_x64", True)
-
-    def _weight_warning(self, i: DTypeLike):
-        """
-        Display a warning message if the weight is close to zero.
-
-        Parameters
-        ----------
-        i : int
-            The current component number in the PLS algorithm.
-
-        Warns
-        -----
-        UserWarning.
-            If the weight norm is below machine epsilon, a warning message is
-            displayed.
-
-        Notes
-        -----
-        This method issues a warning if the weight becomes close to zero during the PLS
-        algorithm. It provides a hint about potential instability in results with a
-        higher number of components.
-        """
-        warnings.warn(
-            message=f"Weight is close to zero. Results with A = {i + 1} "
-            "component(s) or higher may be unstable.",
-            category=UserWarning,
-        )
-        if self.max_stable_components in (None, self.A):
-            self.max_stable_components = int(i)
-
-    @partial(jax.jit, static_argnums=0)
-    def _weight_warning_callback(self, i: ArrayLike, norm: DTypeLike):
-        # `i` is the component index. It is a traced scalar (the `lax.scan` loop
-        # variable) when called from inside the fitting scan, and is materialized on
-        # the host by `io_callback` at runtime; hence the permissive `ArrayLike`
-        # annotation rather than `int`.
-        #
-        # NOTE (known limitation): `jax.experimental.io_callback(..., ordered=True)`
-        # is NOT supported under `jax.vmap`. The ordered callback works inside
-        # `lax.scan`/`lax.cond` (preserving program order), which is what the
-        # per-component fitting loop uses, and inside the Python fold loop of
-        # `cross_validate`. However, any future batched/vmapped fit (e.g. a vmap over
-        # cross-validation folds) MUST drop or relocate this callback -- for instance
-        # by returning the per-component `norm` array to the caller for inspection
-        # instead of warning from the host side here.
-        close_to_zero = jnp.isclose(norm, 0, atol=jnp.finfo(self.dtype).eps, rtol=0)
-        return jax.lax.cond(
-            close_to_zero,
-            lambda num_components: jax.experimental.io_callback(
-                self._weight_warning, None, num_components, ordered=True
-            ),
-            lambda _num_components: None,
-            i,
-        )
 
     @partial(jax.jit, static_argnums=0)
     def _compute_regression_coefficients(
@@ -951,12 +890,6 @@ class PLSBase(abc.ABC):
             Sample standard deviation of the response variables `scale_Y` is True,
             otherwise None.
 
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
-
         See Also
         --------
         fit : Performs the same operation but stores the output matrices in the class
@@ -995,9 +928,10 @@ class PLSBase(abc.ABC):
         A : int
             Number of components in the PLS model.
 
-        max_stable_components : int
-            Maximum number of components that can be used without the residual going
-            below machine epsilon.
+        max_stable_components : None
+            Always None for the JAX implementations: they do not track the underflow
+            point (no underflow warning is emitted). The NumPy implementations instead
+            set this to the number of numerically stable components.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
@@ -1035,12 +969,6 @@ class PLSBase(abc.ABC):
         ------
         ValueError
             If `weights` are provided and not all weights are non-negative.
-
-        Warns
-        -----
-        UserWarning.
-            If at any point during iteration over the number of components `A`, the
-            residual goes below machine epsilon.
 
         See Also
         --------
@@ -1611,9 +1539,8 @@ class PLSBase(abc.ABC):
         data splits and evaluate its performance using user-defined metrics.
 
         Note that, because `jax.vmap` is used, `metric_function` and
-        `preprocessing_function` must be JAX-traceable, and the per-fold "weight is
-        close to zero" underflow warning is not emitted during cross-validation (it is
-        emitted by a single `fit`).
+        `preprocessing_function` must be JAX-traceable. The JAX implementation emits no
+        underflow warning in any path (single fit or cross-validation).
         """
         X = jnp.asarray(X, dtype=self.dtype)
         Y = jnp.asarray(Y, dtype=self.dtype)
@@ -1636,23 +1563,9 @@ class PLSBase(abc.ABC):
         ]
 
         # The per-fold fit-predict-evaluate is batched over folds with jax.vmap (instead
-        # of a Python loop), which requires the fit to be free of the ordered io_callback
-        # underflow warning (unsupported under vmap). We therefore fit with a warning-free
-        # clone of this model (`_warn_underflow=False`); its results are numerically
-        # identical to a direct fit. Consequently, no "weight close to zero" warning is
-        # emitted during cross-validation.
-        if getattr(self, "_cv_fitter", None) is None:
-            self._cv_fitter = type(self)(
-                center_X=self.center_X,
-                center_Y=self.center_Y,
-                scale_X=self.scale_X,
-                scale_Y=self.scale_Y,
-                ddof=self.ddof,
-                copy=self.copy,
-                dtype=self.dtype,
-            )
-            self._cv_fitter._warn_underflow = False
-        fitter = self._cv_fitter
+        # of a Python loop). The JAX fit emits no host-side callbacks, so it is vmap-safe
+        # and is used directly.
+        fitter = self
 
         def fold_fn(train_idxs, val_idxs):
             return fitter._inner_cross_validate(

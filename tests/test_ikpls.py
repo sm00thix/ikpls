@@ -2196,11 +2196,13 @@ class TestClass:
                 )
                 assert len(record) == 2
         elif isinstance(pls_model, JaxFastCVPLS):
-            # The JAX fast cross-validation deliberately does NOT emit the per-component
-            # "Weight is close to zero" underflow warning: the ordered io_callback that
-            # emits it is incompatible with jax.vmap. So we only assert that constant-Y
-            # cross-validation completes without raising (the unstable components yield
-            # NaNs rather than a warning).
+            # The JAX implementations emit no "weight close to zero" underflow warning
+            # (it relied on an ordered io_callback that was removed -- the JAX fit is
+            # warning-free for vmap-safety and fast execution). We only assert that the
+            # constant-Y cross-validation completes without raising. Components past the
+            # underflow point are numerically unreliable -- their loadings and regression
+            # coefficients can be NaN and/or very large (divisions by a near-zero score
+            # norm, with inf/NaN then propagating) -- but the computation does not raise.
             pls_model.cross_validate(
                 X=X,
                 Y=Y,
@@ -2209,13 +2211,17 @@ class TestClass:
                 metric_function=self.jax_rmse_per_component,
                 show_progress=False,
             )
-        elif isinstance(pls_model, (NpPLS, JAX_Alg_1, JAX_Alg_2)):
+        elif isinstance(pls_model, (JAX_Alg_1, JAX_Alg_2)):
+            # The JAX fit likewise emits no underflow warning; assert it completes (the
+            # unstable high-order components are computed but not flagged).
+            for _ in range(2):
+                pls_model.fit(X=X, Y=Y, A=n_components)
+        elif isinstance(pls_model, NpPLS):
             msg = "Weight is close to zero."
             with pytest.warns(UserWarning, match=msg) as record:
                 for _ in range(2):
                     pls_model.fit(X=X, Y=Y, A=n_components)
-                    if isinstance(pls_model, NpPLS):
-                        assert_allclose(pls_model.R, 0)
+                    assert_allclose(pls_model.R, 0)
                     assert pls_model.A > pls_model.max_stable_components
                 assert len(record) >= 2
         else:
