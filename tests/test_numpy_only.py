@@ -16,7 +16,7 @@ def test_package_imports_without_jax():
     """Verify the package can be imported without JAX installed."""
     import ikpls
 
-    assert hasattr(ikpls, "numpy_ikpls")
+    assert hasattr(ikpls, "numpy")
     assert hasattr(ikpls, "fast_cross_validation")
 
 
@@ -24,26 +24,35 @@ def test_jax_modules_not_loaded():
     """Verify JAX algorithms are NOT available when JAX is not installed."""
     import ikpls
 
-    assert not hasattr(ikpls, "jax_ikpls_alg_1"), (
-        "jax_ikpls_alg_1 should not be loaded without JAX installed"
-    )
-    assert not hasattr(ikpls, "jax_ikpls_alg_2"), (
-        "jax_ikpls_alg_2 should not be loaded without JAX installed"
+    assert not hasattr(ikpls, "jax"), (
+        "ikpls.jax should not be loaded without JAX installed"
     )
 
 
 def test_jax_direct_import_fails():
     """Verify importing JAX modules directly raises ImportError."""
     with pytest.raises(ImportError):
-        from ikpls import jax_ikpls_alg_1  # noqa: F401
+        from ikpls import jax  # noqa: F401
 
+
+def test_fast_cv_jax_not_loaded():
+    """Verify the fast cross-validation JAX backend is NOT available without JAX."""
+    import ikpls.fast_cross_validation
+
+    assert not hasattr(ikpls.fast_cross_validation, "jax"), (
+        "ikpls.fast_cross_validation.jax should not be loaded without JAX installed"
+    )
+
+
+def test_fast_cv_jax_direct_import_fails():
+    """Verify importing the fast cross-validation JAX backend raises ImportError."""
     with pytest.raises(ImportError):
-        from ikpls import jax_ikpls_alg_2  # noqa: F401
+        from ikpls.fast_cross_validation import jax  # noqa: F401
 
 
 def test_numpy_pls_alg_1_fit():
     """Verify NumPy PLS Algorithm 1 can fit without JAX."""
-    from ikpls.numpy_ikpls import PLS
+    from ikpls.numpy import PLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))
@@ -58,7 +67,7 @@ def test_numpy_pls_alg_1_fit():
 
 def test_numpy_pls_alg_2_fit():
     """Verify NumPy PLS Algorithm 2 can fit without JAX."""
-    from ikpls.numpy_ikpls import PLS
+    from ikpls.numpy import PLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))
@@ -73,7 +82,7 @@ def test_numpy_pls_alg_2_fit():
 
 def test_numpy_pls_predict():
     """Verify NumPy PLS can predict without JAX."""
-    from ikpls.numpy_ikpls import PLS
+    from ikpls.numpy import PLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))
@@ -88,7 +97,7 @@ def test_numpy_pls_predict():
 
 def test_numpy_pls_single_component_predict():
     """Verify NumPy PLS can predict with a specific number of components."""
-    from ikpls.numpy_ikpls import PLS
+    from ikpls.numpy import PLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))
@@ -103,7 +112,7 @@ def test_numpy_pls_single_component_predict():
 
 def test_fast_cv_numpy_pls_alg_1():
     """Verify Fast CV NumPy PLS Algorithm 1 works without JAX."""
-    from ikpls.fast_cross_validation.numpy_ikpls import PLS as FastCVPLS
+    from ikpls.fast_cross_validation.numpy import PLS as FastCVPLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))
@@ -124,7 +133,7 @@ def test_fast_cv_numpy_pls_alg_1():
 
 def test_fast_cv_numpy_pls_alg_2():
     """Verify Fast CV NumPy PLS Algorithm 2 works without JAX."""
-    from ikpls.fast_cross_validation.numpy_ikpls import PLS as FastCVPLS
+    from ikpls.fast_cross_validation.numpy import PLS as FastCVPLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))
@@ -145,7 +154,7 @@ def test_fast_cv_numpy_pls_alg_2():
 
 def test_numpy_pls_cross_validate():
     """Verify NumPy PLS cross-validation works without JAX."""
-    from ikpls.numpy_ikpls import PLS
+    from ikpls.numpy import PLS
 
     rng = np.random.default_rng(42)
     X = rng.standard_normal((100, 10))

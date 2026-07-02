@@ -12,7 +12,7 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.numpy_ikpls import PLS
+from ikpls.numpy import PLS
 
 if __name__ == "__main__":
     N = 100  # Number of samples.
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     # Using float64 is important for numerical stability.
     X = np.random.uniform(size=(N, K))
     Y = np.random.uniform(size=(N, M))
-    weights = np.random.uniform(low=0, high=2, size=(N,))
+    sample_weight = np.random.uniform(low=0, high=2, size=(N,))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -40,7 +40,7 @@ if __name__ == "__main__":
         scale_Y=scale_Y,
         ddof=ddof,
     )
-    np_ikpls_alg_1.fit(X, Y, A, weights)
+    np_ikpls_alg_1.fit(X, Y, A, sample_weight)
 
     # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all possible
     # numbers of components up to and including A.
@@ -48,25 +48,30 @@ if __name__ == "__main__":
 
     # Has shape (N, M) = (100, 10).
     y_pred_20_components = np_ikpls_alg_1.predict(X, n_components=20)
-    (y_pred_20_components == y_pred[19]).all()  # True
+    print("All-components predictions y_pred, shape:", y_pred.shape)
+    print("Predictions with 20 components, shape:", y_pred_20_components.shape)
+    print(
+        "predict(X, n_components=20) equals y_pred[19]:",
+        (y_pred_20_components == y_pred[19]).all(),
+    )
 
     # The internal model parameters can be accessed as follows:
 
     # Regression coefficients tensor of shape (A, K, M) = (20, 50, 10).
-    np_ikpls_alg_1.B
+    print("Regression coefficients B, shape:", np_ikpls_alg_1.B.shape)
 
     # X weights matrix of shape (K, A) = (50, 20).
-    np_ikpls_alg_1.W
+    print("X weights W, shape:", np_ikpls_alg_1.W.shape)
 
     # X loadings matrix of shape (K, A) = (50, 20).
-    np_ikpls_alg_1.P
+    print("X loadings P, shape:", np_ikpls_alg_1.P.shape)
 
     # Y loadings matrix of shape (M, A) = (10, 20).
-    np_ikpls_alg_1.Q
+    print("Y loadings Q, shape:", np_ikpls_alg_1.Q.shape)
 
     # X rotations matrix of shape (K, A) = (50, 20).
-    np_ikpls_alg_1.R
+    print("X rotations R, shape:", np_ikpls_alg_1.R.shape)
 
     # X scores matrix of shape (N, A) = (100, 20).
     # This is only computed for IKPLS Algorithm #1.
-    np_ikpls_alg_1.T
+    print("X scores T, shape:", np_ikpls_alg_1.T.shape)

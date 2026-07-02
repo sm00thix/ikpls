@@ -18,7 +18,7 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.fast_cross_validation.numpy_ikpls import PLS
+from ikpls.fast_cross_validation.numpy import PLS
 
 
 def mse_for_each_target(Y_true, Y_pred):
@@ -127,3 +127,6 @@ if __name__ == "__main__":
             for i in range(M)
         ]
     )
+
+    print("Lowest validation MSE per target per split:\n", lowest_val_mses)
+    print("Best number of components per target per split:\n", best_num_components)

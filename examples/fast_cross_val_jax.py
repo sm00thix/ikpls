@@ -1,6 +1,6 @@
 """
 This file contains an example of the fast JAX cross-validation in IKPLS
-(`ikpls.fast_cross_validation.jax_ikpls.PLS`). It mirrors `fast_cross_val_numpy.py`,
+(`ikpls.fast_cross_validation.jax.PLS`). It mirrors `fast_cross_val_numpy.py`,
 but the per-fold training matrices are computed by rank-update with the `cvmatrix` JAX
 backend and the folds are batched together with `jax.vmap`, running on CPU/GPU/TPU.
 
@@ -26,7 +26,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ikpls.fast_cross_validation.jax_ikpls import PLS
+from ikpls.fast_cross_validation.jax import PLS
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
@@ -74,7 +74,7 @@ if __name__ == "__main__":
         A=A,
         folds=splits,
         metric_function=mse_for_each_target,
-        weights=None,
+        sample_weight=None,
         batch_size=None,
         show_progress=True,
     )

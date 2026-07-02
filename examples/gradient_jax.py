@@ -24,7 +24,7 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
-from ikpls.jax_ikpls_alg_1 import PLS as JAX_Alg_1
+from ikpls.jax import PLS as JAX_Alg_1
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
@@ -45,7 +45,7 @@ def apply_1d_convolution(X: jnp.ndarray, conv_filter: jnp.ndarray) -> jnp.ndarra
 
 @jax.jit
 def weighted_mean_squared_error(
-    Y_true: jnp.ndarray, Y_pred: jnp.ndarray, weights: jnp.ndarray
+    Y_true: jnp.ndarray, Y_pred: jnp.ndarray, sample_weight: jnp.ndarray
 ) -> float:
     """
     Compute the weighted mean squared error between the true and predicted values.
@@ -63,7 +63,7 @@ def weighted_mean_squared_error(
 def convolve_fit_mse(
     X: jnp.ndarray,
     Y: jnp.ndarray,
-    weights: jnp.ndarray,
+    sample_weight: jnp.ndarray,
     pls_alg: JAX_Alg_1,
     A: int,
     n_components: Union[int, None] = None,
@@ -83,12 +83,12 @@ def convolve_fit_mse(
         filtered_X = apply_1d_convolution(X, conv_filter)
 
         # We must use stateless_fit() because we are using JAX's autodiff.
-        matrices = pls_alg.stateless_fit(filtered_X, Y, A, weights)
+        matrices = pls_alg.stateless_fit(filtered_X, Y, A, sample_weight)
         B = matrices[0]  # Extract the regression matrix
 
         # Predict the values.
         Y_pred = pls_alg.stateless_predict(filtered_X, B, n_components)
-        mse_loss = weighted_mean_squared_error(Y, Y_pred, weights)
+        mse_loss = weighted_mean_squared_error(Y, Y_pred, sample_weight)
         return mse_loss
 
     return helper
@@ -138,4 +138,9 @@ if __name__ == "__main__":
         argnums=0,
     )
     jac_alg_1 = jac_fun(conv_filter)
-    np.allclose(jac_alg_1[A], grad_alg_1, atol=0)  # True
+    print("Backward-mode gradient w.r.t. conv_filter, shape:", grad_alg_1.shape)
+    print("Forward-mode Jacobian w.r.t. conv_filter, shape:", jac_alg_1.shape)
+    print(
+        "Backward- and forward-mode gradients agree:",
+        np.allclose(jac_alg_1[A], grad_alg_1, atol=0),
+    )

@@ -26,7 +26,7 @@ import numpy as np
 
 # For this example, we will use IKPLS Algorithm #1.
 # The interface for IKPLS Algorithm #2 is identical.
-from ikpls.jax_ikpls_alg_1 import PLS
+from ikpls.jax import PLS
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
@@ -84,8 +84,8 @@ if __name__ == "__main__":
     X = np.random.uniform(size=(N, K))
     Y = np.random.uniform(size=(N, M))
 
-    # weights can be None for no weighting or an array of shape (N,) for weighting.
-    weights = np.random.uniform(low=0, high=2, size=(N,))
+    # sample_weight can be None for no weighting or an array of shape (N,) for weighting.
+    sample_weight = np.random.uniform(low=0, high=2, size=(N,))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -113,7 +113,7 @@ if __name__ == "__main__":
         preprocessing_function=cross_val_preprocessing,
         metric_function=wmse_per_component_and_best_components,
         metric_names=metric_names,
-        weights=weights,
+        sample_weight=sample_weight,
     )
 
     """
@@ -154,4 +154,16 @@ if __name__ == "__main__":
             for i in range(len(best_num_components_for_each_split))
         ]
     )
-    (best_wmse_for_each_split == equivalent_best_wmse_for_each_split).all()  # True
+    # The two ways of extracting the best weighted MSE agree.
+    print(
+        "Best weighted MSE equals component-indexed weighted MSE:",
+        (best_wmse_for_each_split == equivalent_best_wmse_for_each_split).all(),
+    )
+    print(
+        "Lowest weighted validation MSE per split (rows) and target (cols):\n",
+        best_wmse_for_each_split,
+    )
+    print(
+        "Best number of components per split (rows) and target (cols):\n",
+        best_num_components_for_each_split,
+    )

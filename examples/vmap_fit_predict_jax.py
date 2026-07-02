@@ -30,8 +30,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ikpls.jax_ikpls_alg_2 import PLS as JaxPLS
-from ikpls.numpy_ikpls import PLS as NpPLS
+from ikpls.jax import PLS as JaxPLS
+from ikpls.numpy import PLS as NpPLS
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     numpy_time = time.perf_counter() - t0
 
     # ----- JAX + jax.vmap over the datasets. -----
-    pls = JaxPLS(**kwargs)
+    pls = JaxPLS(algorithm=2, **kwargs)
 
     def fit_predict(X_i, Y_i):
         """Fit one dataset and predict on it, using the (vmap-able) stateless API."""

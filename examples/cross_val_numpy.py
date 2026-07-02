@@ -17,7 +17,7 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.numpy_ikpls import PLS
+from ikpls.numpy import PLS
 
 
 def cross_val_preprocessing(
@@ -142,3 +142,6 @@ if __name__ == "__main__":
             for i in range(M)
         ]
     )
+
+    print("Lowest validation MSE per target per split:\n", lowest_val_mses)
+    print("Best number of components per target per split:\n", best_num_components)

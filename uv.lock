@@ -116,20 +116,20 @@ toml = [
 
 [[package]]
 name = "cvmatrix"
-version = "3.2.0"
+version = "3.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/40/d20073670cf2f7800d37e662e872eae445b7419063cbbdfbcd10866ad77c/cvmatrix-3.2.0.tar.gz", hash = "sha256:9d7ef29e86311e086dfccf38dcc0b76e529e7f5222ccdc689d8b93d3e0c6593d", size = 589560, upload-time = "2026-06-30T01:52:07.978Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/02/3bd00bbe8acf5b4fe0e5a23f8d0032538be9c1d98c31fb1c6bc74a995df4/cvmatrix-3.2.1.tar.gz", hash = "sha256:6fbbef5860f45704783c4ac28307a540a8e729013093992e39e86273b21f6f91", size = 589865, upload-time = "2026-07-01T22:03:12.645Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/7e/f29b4c71f5ec0867a9b48eb8fe63e559c2fcdb71bdcb36ace728d28ff648/cvmatrix-3.2.0-py3-none-any.whl", hash = "sha256:c92b6ada2420ff182da85aac9b1a25ced7e6a93be384784dcc6ca37e94e73692", size = 19802, upload-time = "2026-06-30T01:52:06.427Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/4d/71c25d442113e5d3cdc49eddb49e3723b37d08541b6e3449e2cbdc9fcb28/cvmatrix-3.2.1-py3-none-any.whl", hash = "sha256:b0778d801839d7ca975373220a664311a33fece4d840bb6bad960ede56a99b0e", size = 19854, upload-time = "2026-07-01T22:03:11.332Z" },
 ]
 
 [[package]]
 name = "ikpls"
-version = "5.0.0"
+version = "6.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "cvmatrix" },
@@ -137,7 +137,6 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "scikit-learn" },
-    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -145,6 +144,7 @@ jax = [
     { name = "cvmatrix" },
     { name = "jax" },
     { name = "jaxlib" },
+    { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
@@ -158,14 +158,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvmatrix", specifier = ">=3.0.0" },
-    { name = "cvmatrix", marker = "extra == 'jax'", specifier = ">=3.2.0" },
+    { name = "cvmatrix", specifier = ">=3.2.1" },
+    { name = "cvmatrix", marker = "extra == 'jax'", specifier = ">=3.2.1" },
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.5.0" },
     { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.5.0" },
     { name = "joblib", specifier = ">=1.3.2" },
     { name = "numpy", specifier = ">=2.0.0" },
-    { name = "scikit-learn", specifier = ">=1.5.0" },
-    { name = "tqdm", specifier = ">=4.66.1" },
+    { name = "scikit-learn", specifier = ">=1.6.0" },
+    { name = "tqdm", marker = "extra == 'jax'", specifier = ">=4.66.1" },
 ]
 provides-extras = ["jax"]
 

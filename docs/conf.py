@@ -62,20 +62,24 @@ autodoc_default_options = {
     "undoc-members": True,
     "show-inheritance": True,
     "private-members": False,
+    # Hide noisy auto-generated members from the documented classes:
+    # scikit-learn's metadata-routing setters generated on the
+    # BaseEstimator-derived ``ikpls.sklearn.PLS`` wrapper (``fit``/``score`` expose
+    # extra metadata, so ``set_fit_request``/``set_score_request`` appear; the
+    # other ``set_*_request`` names are listed defensively and are harmless
+    # no-ops when not generated), and the ``_abc_impl`` bookkeeping attribute on
+    # the JAX ``abc.ABC`` base. (Replaces an older ``autodoc-skip-member`` hook;
+    # the inner NumPy ``PLS`` no longer subclasses ``BaseEstimator``.)
+    #
+    # ``y_rotations_`` (sklearn wrapper) is the one fitted value exposed as a
+    # ``@property`` member; every other fitted attribute (including ``C``) is a plain
+    # instance attribute documented via a numpydoc ``Attributes`` section (the class
+    # docstring for the wrapper, the ``fit`` docstring for the NumPy/JAX classes).
+    # Excluding the property member keeps it documented exactly once, consistently
+    # with its siblings, and avoids a duplicate-object warning.
+    "exclude-members": (
+        "set_fit_request,set_predict_request,set_score_request,"
+        "set_transform_request,set_inverse_transform_request,_abc_impl,"
+        "y_rotations_"
+    ),
 }
-
-
-def maybe_skip_member(app, what, name, obj, skip, options):
-    if name in [
-        "set_fit_request",
-        "set_predict_request",
-        "set_transform_request",
-        "set_inverse_transform_request",
-        "_abc_impl",
-    ]:
-        return True
-    return skip
-
-
-def setup(app):
-    app.connect("autodoc-skip-member", maybe_skip_member)

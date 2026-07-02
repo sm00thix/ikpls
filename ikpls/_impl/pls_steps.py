@@ -5,8 +5,8 @@ https://arxiv.org/abs/2401.13185
 https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23
 
 This is the numerical core of Improved Kernel PLS, factored out so that both the
-standard fit (`ikpls.numpy_ikpls`) and the fast cross-validation fit
-(`ikpls.fast_cross_validation.numpy_ikpls`) share a single implementation rather than
+standard fit (`ikpls.numpy`) and the fast cross-validation fit
+(`ikpls.fast_cross_validation.numpy`) share a single implementation rather than
 duplicating it. It is pure NumPy (no scikit-learn dependency) and is called once per
 fit/fold, so it adds no per-component overhead compared to the previous inline loops.
 

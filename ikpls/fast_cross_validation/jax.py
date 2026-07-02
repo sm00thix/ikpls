@@ -4,7 +4,7 @@ least-squares regression using Improved Kernel PLS by Dayal and MacGregor:
 https://arxiv.org/abs/2401.13185
 https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23
 
-This is the JAX counterpart of ``ikpls.fast_cross_validation.numpy_ikpls``. Instead of
+This is the JAX counterpart of ``ikpls.fast_cross_validation.numpy``. Instead of
 parallelizing folds across CPU processes with joblib, it batches the folds with
 ``jax.vmap`` so the per-fold fits run together on a CPU/GPU/TPU. The per-fold training
 :math:`\\mathbf{X}^{\\mathbf{T}}\\mathbf{W}\\mathbf{X}` and/or
@@ -13,7 +13,7 @@ training-set statistics) are obtained by rank-update from the dataset-wide matri
 ``cvmatrix`` with its JAX backend (``cvmatrix[jax]``).
 
 Both Improved Kernel PLS Algorithm #1 and #2 are supported, mirroring
-``ikpls.fast_cross_validation.numpy_ikpls``:
+``ikpls.fast_cross_validation.numpy``:
 
 * Algorithm #2 fits each fold directly from the downdated
   :math:`\\mathbf{X}^{\\mathbf{T}}\\mathbf{W}\\mathbf{X}` (K, K) and
@@ -49,8 +49,8 @@ from cvmatrix.partitioner import Partitioner
 from jax.typing import ArrayLike, DTypeLike
 from tqdm import tqdm
 
-from ikpls.jax_ikpls_alg_1 import PLS as _JaxAlg1
-from ikpls.jax_ikpls_alg_2 import PLS as _JaxAlg2
+from ikpls._impl.jax_alg_1 import PLS as _JaxAlg1
+from ikpls._impl.jax_alg_2 import PLS as _JaxAlg2
 
 
 class PLS:
@@ -85,13 +85,13 @@ class PLS:
     scale_Y : bool, default=True
         Whether to scale `Y`. See `scale_X`.
 
-    ddof : int, default=1
+    ddof : int, default=0
         The delta degrees of freedom to use when computing the sample standard
         deviation. A value of 0 corresponds to the biased estimate of the sample
         standard deviation, while a value of 1 corresponds to Bessel's correction.
 
     copy : bool, default=True
-        Whether to copy `X`, `Y`, and `weights` when cross-validating.
+        Whether to copy `X`, `Y`, and `sample_weight` when cross-validating.
 
     dtype : DTypeLike, default=jnp.float64
         The float datatype to use. Using a lower precision than float64 will yield
@@ -111,7 +111,7 @@ class PLS:
 
     See Also
     --------
-    ikpls.fast_cross_validation.numpy_ikpls.PLS :
+    ikpls.fast_cross_validation.numpy.PLS :
         The NumPy/joblib counterpart. Its ``cross_validate`` shares the same return type
         (a dict mapping each fold to its metric) and ``metric_function`` contract, but
         the performance knobs differ: this class takes ``batch_size`` and
@@ -126,7 +126,7 @@ class PLS:
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
-        ddof: int = 1,
+        ddof: int = 0,
         copy: bool = True,
         dtype: DTypeLike = jnp.float64,
     ) -> None:
@@ -236,7 +236,7 @@ class PLS:
         b = self._fit_B(xtx_t, xty_t, A, K, M)
         return self._predict_on_val(val_idx, b, x_mean, x_std, y_mean, y_std)
 
-    def _validate_folds(self, p: Partitioner, weights: Optional[np.ndarray]) -> None:
+    def _validate_folds(self, p: Partitioner, sample_weight: Optional[np.ndarray]) -> None:
         """
         Host-side pre-flight rejection of degenerate folds. The cvmatrix JAX backend
         omits the per-fold ``ValueError`` checks while traced by ``jax.vmap``, so they
@@ -246,16 +246,16 @@ class PLS:
         if not needs_stats:
             return
         needs_std = self.scale_X or self.scale_Y
-        if weights is None:
+        if sample_weight is None:
             total_nonzero = self.N
         else:
             # Count non-zeros on the dtype-cast weights actually used on-device, so a
             # weight that underflows to 0 under ``self.dtype`` is rejected just as the
-            # numpy backend (which validates the already-cast weights) would.
-            w = np.asarray(weights, dtype=self.dtype).ravel()
+            # numpy backend (which validates the already-cast sample_weight) would.
+            w = np.asarray(sample_weight, dtype=self.dtype).ravel()
             total_nonzero = int(np.count_nonzero(w))
         for fold, vi in p.folds_dict.items():
-            if weights is None:
+            if sample_weight is None:
                 nnz_train = self.N - int(vi.shape[0])
             else:
                 nnz_train = total_nonzero - int(np.count_nonzero(w[vi]))
@@ -278,7 +278,7 @@ class PLS:
         A: int,
         folds: Iterable[Hashable],
         metric_function: Callable[..., Any],
-        weights: Optional[ArrayLike] = None,
+        sample_weight: Optional[ArrayLike] = None,
         batch_size: Optional[int] = None,
         show_progress: bool = True,
     ) -> dict[Hashable, Any]:
@@ -301,15 +301,16 @@ class PLS:
             An iterable defining cross-validation splits. Each unique value in `folds`
             corresponds to a different fold.
 
-        metric_function : Callable receiving `Y_val` (N_val, M), `Y_pred`\
-        (A, N_val, M), and, if `weights` is not None, also `weights_val` (N_val,),\
-        and returning Any.
-            Computes a metric from the true `Y_val` and predicted `Y_pred`. `Y_pred`
-            contains a prediction for all `A` components. **Must be JAX-traceable**
-            (``jax.numpy``-based): it is evaluated on device inside ``jax.vmap`` over the
-            folds, so only the metric (not the prediction tensor) is transferred back.
+        metric_function : Callable
+            Computes a metric from the true ``Y_val`` (N_val, M) and the predicted
+            ``Y_pred`` (A, N_val, M) -- and, if ``sample_weight`` is not None, also
+            ``weights_val`` (N_val,) -- returning any value. ``Y_pred`` contains a
+            prediction for all `A` components. **Must be JAX-traceable**
+            (``jax.numpy``-based): it is evaluated on device inside ``jax.vmap`` over
+            the folds, so only the metric (not the prediction tensor) is transferred
+            back.
 
-        weights : Array of shape (N,) or None, optional, default=None
+        sample_weight : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, all observations are weighted
             equally. Must be non-negative.
 
@@ -331,7 +332,7 @@ class PLS:
         Raises
         ------
         ValueError
-            If `weights` are provided and not all weights are non-negative, or if a
+            If `sample_weight` are provided and not all weights are non-negative, or if a
             fold's training set has too few non-zero weights to compute the requested
             centering/scaling statistics.
 
@@ -351,7 +352,7 @@ class PLS:
             copy=self.copy,
             backend="jax",
         )
-        self._cvm.fit(X, Y, weights)  # validates non-negative weights; builds globals
+        self._cvm.fit(X, Y, sample_weight)  # validates non-negative weights; builds globals
         self.A = A
         self.N, self.K = self._cvm.X.shape
         self.M = self._cvm.Y.shape[1]
@@ -362,7 +363,7 @@ class PLS:
             self._sqrt_weights = None
 
         p = Partitioner(folds)
-        self._validate_folds(p, weights)
+        self._validate_folds(p, sample_weight)
         all_idx = np.arange(self.N, dtype=int)
         has_weights = self._cvm.weights is not None
 
@@ -373,7 +374,7 @@ class PLS:
             buckets[int(vi.shape[0])].append((fold, vi))
 
         def evaluate(val_idx, y_pred):
-            # On-device metric: gather the held-out targets (and weights) and apply the
+            # On-device metric: gather the held-out targets (and sample_weight) and apply the
             # JAX-traceable `metric_function` inside the vmapped/jitted computation, so no
             # per-fold host round-trip is needed and only the metric (not the full
             # prediction tensor) is transferred back.

@@ -26,7 +26,7 @@ import numpy as np
 
 # For this example, we will use IKPLS Algorithm #1.
 # The interface for IKPLS Algorithm #2 is identical.
-from ikpls.jax_ikpls_alg_1 import PLS
+from ikpls.jax import PLS
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
@@ -108,7 +108,7 @@ if __name__ == "__main__":
         preprocessing_function=cross_val_preprocessing,
         metric_function=mse_per_component_and_best_components,
         metric_names=metric_names,
-        weights=None,
+        sample_weight=None,
         # cross_validate batches the folds with jax.vmap (grouped by validation-set size
         # so shapes are fixed). `batch_size` caps how many folds are vmapped together;
         # lower it to bound peak memory when there are many folds and/or large K (each
@@ -155,4 +155,16 @@ if __name__ == "__main__":
             for i in range(len(best_num_components_for_each_split))
         ]
     )
-    (best_mse_for_each_split == equivalent_best_mse_for_each_split).all()  # True
+    # The two ways of extracting the best MSE agree.
+    print(
+        "Best MSE equals component-indexed MSE:",
+        (best_mse_for_each_split == equivalent_best_mse_for_each_split).all(),
+    )
+    print(
+        "Lowest validation MSE per split (rows) and target (cols):\n",
+        best_mse_for_each_split,
+    )
+    print(
+        "Best number of components per split (rows) and target (cols):\n",
+        best_num_components_for_each_split,
+    )
