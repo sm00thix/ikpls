@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     X = np.random.uniform(size=(N, K))
     Y = np.random.uniform(size=(N, M))
-    sample_weight = np.random.uniform(size=N)  # Random sample_weight for each sample.
+    sample_weight = np.random.uniform(size=N)  # Random weight for each sample.
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.

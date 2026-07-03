@@ -368,7 +368,7 @@ class PLS:
             samples.
 
         metric_function : Callable receiving arrays `Y_true` and `Y_pred`, and, if
-        `self.weights` is not None, also `sample_weight`, and returning Any.
+        `self.cvm.weights` is not None, also `sample_weight`, and returning Any.
 
         Returns
         -------
@@ -495,6 +495,11 @@ class PLS:
             self.all_indices = np.arange(self.cvm.N, dtype=int)
             if sample_weight is not None:
                 self.sqrt_weights = np.sqrt(self.cvm.weights)
+            else:
+                # Reset any sqrt-weights left over from a previous weighted
+                # cross_validate on this instance: a stale value would silently
+                # weight the training rows of an unweighted run.
+                self.sqrt_weights = None
 
         def worker(
             validation_indices: npt.NDArray[np.int_],

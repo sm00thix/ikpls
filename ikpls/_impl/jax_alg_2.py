@@ -214,11 +214,16 @@ class PLS(PLSBase):
             print(f"_step_4 for {self.name} will be JIT compiled...")
         rXTX = r.T @ XTX
         tTt = rXTX @ r
-        # Guard against an underflowing component (zero weight from _step_2 -> t ~ 0
-        # -> tTt ~ 0) producing NaN loadings: with a zero numerator, 0 / 1 = 0, matching
-        # the NumPy implementation. Stable components (tTt > eps) are unchanged. The
-        # ORIGINAL tTt is returned; _step_5 only multiplies by it.
-        safe_tTt = jnp.where(tTt <= self.eps, 1.0, tTt)
+        # Guard against an underflowed component producing NaN loadings: when _step_2
+        # zeroes the weight, r is exactly zero, so tTt = r^T XTX r is EXACTLY zero,
+        # and 0 / 1 = 0 matches the NumPy implementation. The condition must be exact
+        # equality with zero -- NOT a tolerance like tTt <= eps -- because tTt scales
+        # with the data magnitude: legitimately small-magnitude unscaled data has
+        # tiny-but-nonzero tTt that must be divided through exactly as NumPy does
+        # (NumPy has no tTt guard at all; its only break conditions are the _step_2
+        # weight norms). Live components are therefore byte-identical. The ORIGINAL
+        # tTt is returned; _step_5 only multiplies by it.
+        safe_tTt = jnp.where(tTt == 0.0, 1.0, tTt)
         p = rXTX.T / safe_tTt
         q = self._step_4_compute_q(r, XTY, safe_tTt, M, K, norm, q, largest_eigval)
         return tTt, p, q

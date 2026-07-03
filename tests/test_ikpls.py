@@ -145,6 +145,15 @@ def test_sklearn_wrapper_forwards_params_to_inner():
                 rtol=1e-9,
             )
 
+    # dtype must forward too: a float32 wrapper must build a float32 inner model
+    # and expose float32 fitted attributes and transforms.
+    wrapper32 = SklearnPLS(n_components=A, dtype=np.float32).fit(X, Y)
+    assert wrapper32.inner_.dtype == np.float32
+    assert wrapper32.coef_.dtype == np.float32
+    assert wrapper32.x_weights_.dtype == np.float32
+    assert wrapper32.y_rotations_.dtype == np.float32
+    assert wrapper32.transform(X).dtype == np.float32
+
 
 def test_scale_and_stability():
     """Internal scaling on raw data is equivalent to no scaling on pre-standardized
@@ -266,6 +275,134 @@ def test_jax_reverse_gradients_finite_on_degenerate_scaling_and_overextraction()
             # A finite-but-severed (all-zero) gradient would also pass isfinite;
             # assert the gradient actually flows through the fit.
             assert bool(jnp.any(grad != 0.0))
+
+
+def test_jax_small_magnitude_unscaled_data_matches_numpy():
+    """The JAX underflow guards must not fire on legitimately small-magnitude data.
+
+    With scaling off, ``t^T t`` on small-magnitude X is tiny but nonzero and must
+    be divided through exactly as NumPy does (NumPy has no ``t^T t`` guard at
+    all). A guard keyed on a tolerance (``tTt <= eps``) instead of exact zero
+    corrupted ``B`` by ~17 orders of magnitude on this input while
+    ``max_stable_components`` still reported every component as stable.
+    """
+    rng = np.random.default_rng(0)
+    X = 1e-9 * rng.standard_normal((10, 5))
+    Y = rng.standard_normal((10, 3))
+    A = 3
+    kwargs = dict(center_X=False, center_Y=False, scale_X=False, scale_Y=False)
+    for jax_cls in (JAX_Alg_1, JAX_Alg_2):
+        np_pls = NpPLS(algorithm=1 if jax_cls is JAX_Alg_1 else 2, **kwargs)
+        np_pls.fit(X, Y, A)
+        jax_pls = jax_cls(**kwargs)
+        jax_pls.fit(X, Y, A)
+        assert jax_pls.max_stable_components == A
+        # B entries are huge (~1e8: Y ~ 1 regressed on X ~ 1e-9); compare on a
+        # normalized scale so the tolerance is magnitude-independent.
+        scale = np.max(np.abs(np_pls.B))
+        assert_allclose(
+            np.asarray(jax_pls.B) / scale, np_pls.B / scale, atol=1e-10, rtol=0
+        )
+
+
+def test_fast_cv_reused_instance_resets_stale_weights():
+    """An unweighted cross_validate after a weighted one on the SAME instance must
+    equal a fresh instance's result: Algorithm #1 stores sqrt-weights to weight
+    its gathered training rows, and a stale value from the previous weighted call
+    must not silently leak into the unweighted run."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((40, 8))
+    Y = rng.standard_normal((40, 2))
+    sample_weight = rng.uniform(0.5, 2.0, size=40)
+    folds = np.arange(40) % 4
+
+    def mse(Y_true, Y_pred, sample_weight=None):
+        return float(np.mean((Y_true - Y_pred) ** 2))
+
+    reused = FastCVPLS(algorithm=1)
+    reused.cross_validate(
+        X, Y, 3, folds, mse, sample_weight=sample_weight, n_jobs=1, verbose=0
+    )
+    reused_res = reused.cross_validate(X, Y, 3, folds, mse, n_jobs=1, verbose=0)
+    fresh_res = FastCVPLS(algorithm=1).cross_validate(
+        X, Y, 3, folds, mse, n_jobs=1, verbose=0
+    )
+    for key in fresh_res:
+        assert_allclose(reused_res[key], fresh_res[key], atol=0, rtol=0)
+
+
+def test_transform_and_inverse_transform_match_sklearn():
+    """transform (X- and Y-scores) and inverse_transform of every implementation
+    -- NumPy and JAX Algorithms #1/#2 and the ikpls.sklearn.PLS wrapper -- match
+    scikit-learn's PLSRegression (NIPALS) on Linnerud.
+
+    Scores are compared up to the per-component sign ambiguity (|T| vs |T_sk|);
+    reconstructions are sign-invariant (the sign flips of T and P cancel in
+    T @ P.T), so they are compared directly. sklearn's NIPALS always centers and
+    scales X and Y with ddof=1 when scale=True, so the ikpls models are
+    configured to match. At full rank (A == n_features) the reconstruction
+    round-trips X exactly for both ikpls and scikit-learn.
+    """
+    data = load_linnerud()
+    X = data.data.astype(np.float64)
+    Y = data.target.astype(np.float64)
+    A = 2  # Reducing (A < K = 3), so the reconstruction is a genuine projection.
+
+    sk_pls = SkPLS(n_components=A, scale=True).fit(X, Y)
+    sk_T, sk_U = sk_pls.transform(X, Y)
+    sk_X_rec, sk_Y_rec = sk_pls.inverse_transform(sk_T, sk_U)
+
+    kwargs = dict(center_X=True, center_Y=True, scale_X=True, scale_Y=True, ddof=1)
+    np_alg_1 = NpPLS(algorithm=1, **kwargs)
+    np_alg_2 = NpPLS(algorithm=2, **kwargs)
+    jax_alg_1 = JAX_Alg_1(**kwargs)
+    jax_alg_2 = JAX_Alg_2(**kwargs)
+    for model in (np_alg_1, np_alg_2, jax_alg_1, jax_alg_2):
+        model.fit(X, Y, A)
+        T, U = model.transform(X=X, Y=Y, n_components=A)
+        T, U = np.asarray(T), np.asarray(U)
+        # Scores match NIPALS up to the per-component sign.
+        assert_allclose(np.abs(T), np.abs(sk_T), atol=1e-4)
+        assert_allclose(np.abs(U), np.abs(sk_U), atol=1e-4)
+        # Reconstructions are sign-invariant and match NIPALS directly.
+        X_rec, Y_rec = model.inverse_transform(T=T, U=U)
+        assert_allclose(np.asarray(X_rec), sk_X_rec, atol=1e-4)
+        assert_allclose(np.asarray(Y_rec), sk_Y_rec, atol=1e-4)
+
+    # The sklearn wrapper: same guarantees through the sklearn-style API.
+    wrapper = SklearnPLS(n_components=A, **kwargs).fit(X, Y)
+    T_only = wrapper.transform(X)
+    T, U = wrapper.transform(X, Y)
+    assert_array_equal(T_only, T)
+    assert_allclose(np.abs(T), np.abs(sk_T), atol=1e-4)
+    assert_allclose(np.abs(U), np.abs(sk_U), atol=1e-4)
+    X_rec_only = wrapper.inverse_transform(T)
+    X_rec, Y_rec = wrapper.inverse_transform(T, U)
+    assert_array_equal(X_rec_only, X_rec)
+    assert_allclose(X_rec, sk_X_rec, atol=1e-4)
+    assert_allclose(Y_rec, sk_Y_rec, atol=1e-4)
+
+    # The wrapper delegates to the native NumPy model bit-for-bit.
+    assert_array_equal(T, np.asarray(np_alg_1.transform(X=X, n_components=A)))
+    assert_array_equal(
+        X_rec, np.asarray(np_alg_1.inverse_transform(T=T))
+    )
+
+    # Full rank (A == K): transform/inverse_transform round-trips X exactly for
+    # ikpls and scikit-learn alike.
+    A_full = X.shape[1]
+    sk_full = SkPLS(n_components=A_full, scale=True).fit(X, Y)
+    for model in (NpPLS(algorithm=1, **kwargs), NpPLS(algorithm=2, **kwargs)):
+        model.fit(X, Y, A_full)
+        rt = np.asarray(
+            model.inverse_transform(T=model.transform(X=X, n_components=A_full))
+        )
+        assert_allclose(rt, X, atol=1e-8)
+    wrapper_full = SklearnPLS(n_components=A_full, **kwargs).fit(X, Y)
+    assert_allclose(
+        wrapper_full.inverse_transform(wrapper_full.transform(X)), X, atol=1e-8
+    )
+    assert_allclose(sk_full.inverse_transform(sk_full.transform(X)), X, atol=1e-8)
 
 
 # Warning raised due to MathJax in some docstrins in the FastCVPLS class.

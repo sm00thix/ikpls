@@ -605,16 +605,20 @@ class PLSBase(abc.ABC):
         # ``max_stable_components`` still detects the underflow. Stable components
         # (norm > eps) are byte-identical to before.
         #
-        # This guards the forward VALUE, and forward-mode autodiff (JVP) is finite too
-        # -- ``jnp.where`` SELECTS tangents, discarding the guarded-out branch. But
-        # REVERSE-mode (VJP / jax.grad) can still be NaN for a *fully-degenerate* fit
-        # with exactly-zero X-Y covariance (an entirely-constant Y): ``jla.norm`` /
-        # ``jla.eigh`` have 0/0 or 1/0 VJPs at zero / repeated eigenvalues, and
-        # reverse-mode multiplies the zero cotangent by that local partial (0 * NaN =
-        # NaN); no ``where`` around them can cure it. Such inputs are pathological (a
+        # This guards the forward VALUE. The guarded DIVISION is also
+        # autodiff-safe in both modes (``jnp.where`` selects tangents/cotangents of
+        # the taken branch). Gradients through a *fully-degenerate* fit with
+        # exactly-zero X-Y covariance (an entirely-constant Y) are NaN in BOTH
+        # forward (JVP) and reverse (VJP) mode nonetheless: the raw ``jla.norm`` /
+        # ``jla.eigh`` outputs -- returned as ``norm`` / the largest eigenvalue and
+        # consumed downstream -- have undefined derivatives at zero / repeated
+        # eigenvalues (0/0 tangents forward; 0 * NaN cotangent products in reverse),
+        # and no ``where`` around them can cure it. Such inputs are pathological (a
         # model with no signal). Note that merely OVER-EXTRACTING components on
         # ordinary data does NOT trigger this -- those residuals are tiny-but-nonzero,
-        # not exactly zero -- so normal and over-specified fits stay differentiable.
+        # not exactly zero -- so normal and over-specified fits stay differentiable
+        # in both modes, as does a fit whose only degeneracy is a constant (zero-
+        # variance) FEATURE under scaling (see _get_std).
         if M == 1:
             norm = jla.norm(XTY)
             safe_norm = jnp.where(norm <= self.eps, 1.0, norm)

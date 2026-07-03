@@ -54,18 +54,27 @@ def test_bad_algorithm_raises_valueerror(bad):
 
 @pytest.mark.parametrize("algorithm, impl", [(1, _Alg1), (2, _Alg2)])
 def test_dispatcher_matches_impl_numerically(algorithm, impl):
-    """PLS(algorithm=k) is bit-identical to using the private impl directly."""
+    """PLS(algorithm=k) is bit-identical to using the private impl directly.
+
+    The kwargs deliberately use NON-default values so that a dispatcher that
+    silently dropped ``**kwargs`` could not pass (with defaults, dropping them
+    would be invisible)."""
     import jax.numpy as jnp
 
     rng = np.random.default_rng(0)
     X = jnp.asarray(rng.standard_normal((30, 6)))
     Y = jnp.asarray(rng.standard_normal((30, 2)))
-    kwargs = dict(center_X=True, center_Y=True, scale_X=True, scale_Y=True)
+    kwargs = dict(center_X=False, center_Y=True, scale_X=True, scale_Y=False, ddof=1)
 
     via_dispatcher = PLS(algorithm=algorithm, **kwargs)
     via_dispatcher.fit(X, Y, 3)
     direct = impl(**kwargs)
     direct.fit(X, Y, 3)
+
+    # The non-default kwargs must actually land on the returned implementation
+    # (guards the dispatcher's "**kwargs forwarded verbatim" contract).
+    for name, value in kwargs.items():
+        assert getattr(via_dispatcher, name) == value, name
 
     np.testing.assert_array_equal(
         np.asarray(via_dispatcher.B), np.asarray(direct.B)

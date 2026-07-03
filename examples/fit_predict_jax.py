@@ -55,10 +55,10 @@ if __name__ == "__main__":
 
     print("All-components predictions y_pred, shape:", y_pred.shape)
     print("Predictions with 20 components, shape:", y_pred_20_components.shape)
-    # Exact equality might not hold due to numerical differences.
+    # Exact equality might not hold due to numerical differences under JIT.
     print(
         "predict(X, n_components=20) close to y_pred[19]:",
-        np.allclose(y_pred_20_components, y_pred[19], atol=0, rtol=1e14),
+        np.allclose(y_pred_20_components, y_pred[19], atol=0, rtol=1e-10),
     )
 
     # The internal model parameters can be accessed as follows:

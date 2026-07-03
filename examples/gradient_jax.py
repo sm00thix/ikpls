@@ -52,11 +52,12 @@ def weighted_mean_squared_error(
     """
     # Y_true is a matrix of shape (N, M) = (100, 10)
     # Y_pred is a matrix of shape (N, M) = (100, 10) or (A, N, M) = (20, 100, 10)
-    # Y_pred is a
+    # sample_weight is a vector of shape (N,) = (100,)
     e = Y_true - Y_pred  # Shape (N, M) or (A, N, M)
     se = e**2  # Shape (N, M) or (A, N, M)
-    mse = jnp.mean(se, axis=(-2, -1))  # Shape () or (A,)
-    return mse
+    # Weighted mean over the sample axis, then mean over targets.
+    wmse = jnp.average(se, axis=-2, weights=sample_weight)  # Shape (M,) or (A, M)
+    return jnp.mean(wmse, axis=-1)  # Shape () or (A,)
 
 
 # Function to differentiate.
@@ -140,7 +141,9 @@ if __name__ == "__main__":
     jac_alg_1 = jac_fun(conv_filter)
     print("Backward-mode gradient w.r.t. conv_filter, shape:", grad_alg_1.shape)
     print("Forward-mode Jacobian w.r.t. conv_filter, shape:", jac_alg_1.shape)
+    # Row i of the Jacobian corresponds to i + 1 components, so the A-component
+    # row is jac_alg_1[A - 1].
     print(
         "Backward- and forward-mode gradients agree:",
-        np.allclose(jac_alg_1[A], grad_alg_1, atol=0),
+        np.allclose(jac_alg_1[A - 1], grad_alg_1, atol=0),
     )

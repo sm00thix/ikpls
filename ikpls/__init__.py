@@ -38,14 +38,17 @@ def __getattr__(name):
     if name in _LAZY_SUBMODULES:
         try:
             return importlib.import_module(f"{__name__}.{name}")
-        except ImportError:
+        except ImportError as err:
             if name in _OPTIONAL_SUBMODULES:
                 # Report a missing optional backend as an absent attribute so that
-                # ``hasattr(ikpls, name)`` is False (JAX is optional).
+                # ``hasattr(ikpls, name)`` is False (JAX is optional). The original
+                # ImportError is chained as __cause__ so that a real failure inside
+                # an INSTALLED-but-broken JAX stack remains diagnosable from the
+                # traceback instead of being masked as "not installed".
                 raise AttributeError(
                     f"module {__name__!r} has no attribute {name!r}; the optional "
                     f"'{name}' backend requires 'pip install ikpls[{name}]'"
-                ) from None
+                ) from err
             raise
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

@@ -24,7 +24,6 @@ E-mail: ocge@foss.dk
 """
 
 import numbers
-import warnings
 
 import numpy as np
 from sklearn.base import (
@@ -34,7 +33,6 @@ from sklearn.base import (
     RegressorMixin,
     TransformerMixin,
 )
-from sklearn.exceptions import DataConversionWarning
 from sklearn.metrics import r2_score
 from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
@@ -212,6 +210,16 @@ class PLS(
         # before any data work (sklearn-style fail-fast).
         self._validate_n_components()
 
+        # y is required to fit (supervised), even though the transformer side of the
+        # API does not require it (target_tags.required is False). Raise a clear
+        # message: with required=False, validate_data would otherwise route the
+        # fit-only kwargs below into check_array and fail with an opaque TypeError.
+        if y is None:
+            raise ValueError(
+                f"{self.__class__.__name__} is a supervised estimator: fit requires "
+                "y, but y is None."
+            )
+
         # Validate + record n_features_in_. reset=True because fit defines it.
         # multi_output=True lets (N, M) y through; 1D y stays 1D. ensure_min_samples=2
         # because PLS needs variance to fit (a single sample makes the scaled std
@@ -239,19 +247,12 @@ class PLS(
                 f"min(n_samples, n_features)={rank_upper_bound}."
             )
 
-        # sklearn convention: warn when a column-vector y is passed for what
-        # is effectively single-output regression.
-        if y.ndim == 2 and y.shape[1] == 1:
-            warnings.warn(
-                "A column-vector y was passed when a 1d array was expected. "
-                "Please change the shape of y to (n_samples,), for example "
-                "using ravel().",
-                DataConversionWarning,
-                stacklevel=2,
-            )
-
-        # Remember whether the user gave 1D y so predict can match its shape.
-        self._y_1d = y.ndim == 1
+        # A (N, 1) column-vector y is first-class here (multi-output estimator with
+        # M = 1, like PLSRegression) -- no DataConversionWarning; predictions simply
+        # keep the 2D shape. Whether the user gave 1D y is recorded AFTER inner.fit
+        # succeeds (below) so a failed refit cannot leave _y_1d inconsistent with
+        # the surviving fitted state.
+        y_1d = y.ndim == 1
 
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=self.dtype)
@@ -270,6 +271,8 @@ class PLS(
         inner.fit(X, y, A=self.n_components, sample_weight=sample_weight)
 
         self.inner_ = inner
+        # Remember whether the user gave 1D y so predict can match its shape.
+        self._y_1d = y_1d
         self.n_components_ = self.n_components
         # Number of output features of transform() == number of components.
         # Consumed by ClassNamePrefixFeaturesOutMixin.get_feature_names_out.
@@ -442,11 +445,16 @@ class PLS(
         """
         check_is_fitted(self)
         # Scores live in component space, not feature space, so we do NOT validate
-        # against n_features_in_. The inner inverse_transform coerces each score
-        # argument to a 2D array of self.dtype (via _convert_input_to_array), so no
-        # reshaping or dtype casting is needed here.
+        # against n_features_in_. But like PLSRegression's inverse_transform, the
+        # scores are check_array-validated: a 1D score vector is REJECTED (sklearn's
+        # 'Expected 2D array' message) rather than silently reinterpreted as
+        # n_components one-component samples, and non-finite scores are rejected.
+        # check_array also casts to self.dtype, so the inner delegate's own
+        # 2D/dtype coercion is a no-op afterwards.
+        X = check_array(X, dtype=self.dtype, input_name="X")
         if y is None:
             return self.inner_.inverse_transform(T=X)
+        y = check_array(y, dtype=self.dtype, input_name="y")
         return self.inner_.inverse_transform(T=X, U=y)
 
     def score(self, X, y, sample_weight=None):
