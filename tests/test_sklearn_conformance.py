@@ -312,6 +312,41 @@ def test_refit_overwrites_state_and_is_deterministic():
     np.testing.assert_array_equal(first, second)
 
 
+def test_failed_refit_leaves_previous_fit_intact():
+    """A refit that raises must not corrupt the surviving fitted state.
+
+    scikit-learn defines no contract for estimator state after a failed fit (and
+    check_estimator never exercises fit-success -> fit-failure -> keep using), but
+    this estimator guarantees the stronger property: a failed refit leaves the
+    estimator behaving exactly as the previous successful fit. Regression test for
+    the 1D-y bookkeeping, which used to be recorded before the inner fit could
+    fail: a failed 1D-y refit then made predict silently ravel the surviving
+    multi-target predictions to the wrong shape.
+    """
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((20, 5))
+    Y = rng.standard_normal((20, 3))
+    y_1d = rng.standard_normal(20)
+
+    est = SklearnPLS(n_components=2).fit(X, Y)
+    inner_before = est.inner_
+    preds_before = est.predict(X).copy()
+    coef_before = est.coef_.copy()
+
+    # Negative sample weights make the inner fit raise (after the flag used to
+    # be set), aborting the refit partway through.
+    with pytest.raises(ValueError):
+        est.fit(X, y_1d, sample_weight=-np.ones(20))
+
+    # The estimator must behave exactly as the previous successful fit: same
+    # inner model, same (N, 3) prediction shape (no 1D ravel), same values.
+    assert est.inner_ is inner_before
+    preds_after = est.predict(X)
+    assert preds_after.shape == (20, 3)
+    np.testing.assert_array_equal(preds_after, preds_before)
+    np.testing.assert_array_equal(est.coef_, coef_before)
+
+
 def test_fit_returns_self():
     """fit returns the estimator instance (sklearn contract)."""
     rng = np.random.default_rng(0)
