@@ -17,7 +17,7 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.numpy_ikpls import PLS
+from ikpls.numpy import PLS
 
 
 def cross_val_preprocessing(
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     X = np.random.uniform(size=(N, K))
     Y = np.random.uniform(size=(N, M))
-    weights = np.random.uniform(low=0, high=2, size=(N,))
+    sample_weight = np.random.uniform(low=0, high=2, size=(N,))
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -111,7 +111,7 @@ if __name__ == "__main__":
         folds=splits,
         preprocessing_function=None,
         metric_function=wmse_for_each_target,
-        weights=weights,
+        sample_weight=sample_weight,
         n_jobs=-1,
         verbose=10,
     )
@@ -145,3 +145,6 @@ if __name__ == "__main__":
             for i in range(M)
         ]
     )
+
+    print("Lowest weighted validation MSE per target per split:\n", lowest_val_wmses)
+    print("Best number of components per target per split:\n", best_num_components)

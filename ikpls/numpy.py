@@ -3,64 +3,33 @@ This file contains the PLS Class which implements partial least-squares regressi
 using Improved Kernel PLS by Dayal and MacGregor:
 https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23
 
-The PLS class subclasses scikit-learn's BaseEstimator to ensure compatibility with e.g.
-scikit-learn's cross_validate. It is written using NumPy.
-
-This file also contains the _R_Y_Mapping class which is a concrete Mapping to store the
-PLS weights matrix to compute scores U directly from original Y for different numbers
-of components.
+This class is written using NumPy. Its native API is optimized for fast
+cross-validation: ``fit`` takes the number of components ``A`` directly, and
+``predict`` can return predictions for every number of components ``1..A`` at
+once. For use inside the scikit-learn ecosystem (e.g. ``cross_validate``,
+``Pipeline``, ``GridSearchCV``), a thin scikit-learn-conformant wrapper,
+``ikpls.sklearn.PLS``, subclasses ``BaseEstimator`` and delegates to this
+class.
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
 import warnings
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable
 from typing import Any, Iterable, Optional, Self, Tuple, Union
 
 import joblib
 import numpy as np
-import numpy.linalg as la
 import numpy.typing as npt
 from joblib import Parallel, delayed
-from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 
-from ikpls._pls_steps import improved_kernel_pls_inner_loop
+from ikpls._impl.pls_steps import improved_kernel_pls_inner_loop
+from ikpls._impl.r_y_mapping import _R_Y_Mapping
 
 
-class _R_Y_Mapping(Mapping):
-    """A read-only Mapping that computes values lazily on first access."""
-
-    def __init__(self, Q: npt.NDArray[np.floating]) -> None:
-        self.Q = Q
-        self.eps = np.finfo(Q.dtype).eps
-        self._valid_keys = set(range(1, Q.shape[1] + 1))
-        self._cache = {}
-
-    def __getitem__(self, key):
-        if key not in self._valid_keys:
-            raise KeyError(
-                f"Invalid number of components: {key}. Valid numbers of components are 1 to {self.Q.shape[1]}."
-            )
-        if key not in self._cache:
-            self._cache[key] = la.pinv(self.Q[:, :key].T, rcond=self.eps)
-        return self._cache[key]
-
-    def __iter__(self):
-        return iter(self._valid_keys)
-
-    def __len__(self):
-        return len(self._valid_keys)
-
-    def __contains__(self, key):
-        return key in self._valid_keys
-
-    def __repr__(self):
-        return f"_R_Y_Mapping(Cached R_Y for {len(self._cache)}/{len(self._valid_keys)} n_components)"
-
-
-class PLS(BaseEstimator):
+class PLS:
     """
     Implements partial least-squares regression using Improved Kernel PLS by Dayal and
     MacGregor:
@@ -87,7 +56,7 @@ class PLS(BaseEstimator):
         Whether to scale `Y` before fitting by dividing each row with the row of `Y`'s
         column-wise standard deviations.
 
-    ddof : int, default=1
+    ddof : int, default=0
         The delta degrees of freedom to use when computing the sample standard
         deviation. A value of 0 corresponds to the biased estimate of the sample
         standard deviation, while a value of 1 corresponds to Bessel's correction for
@@ -124,7 +93,7 @@ class PLS(BaseEstimator):
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
-        ddof: int = 1,
+        ddof: int = 0,
         copy: bool = True,
         dtype: type[np.floating] = np.float64,
     ) -> None:
@@ -150,6 +119,7 @@ class PLS(BaseEstimator):
         self.W = None
         self.P = None
         self.Q = None
+        self.C = None  # Y-weights; aliased to Q in fit (see the C attribute docs)
         self.R = None
         self.R_Y = None
         self.T = None
@@ -249,18 +219,18 @@ class PLS(BaseEstimator):
         copy: bool,
         X: Optional[npt.ArrayLike] = None,
         Y: Optional[npt.ArrayLike] = None,
-        weights: Optional[npt.ArrayLike] = None,
+        sample_weight: Optional[npt.ArrayLike] = None,
     ) -> Tuple[
         Optional[npt.ArrayLike], Optional[npt.ArrayLike], Optional[npt.ArrayLike]
     ]:
         """
-        Applies `self._convert_input_to_array` on `X`, `Y`, and `weights` and then
+        Applies `self._convert_input_to_array` on `X`, `Y`, and `sample_weight` and then
         applies `self._copy_arrays` to `X` and `Y`. See those two functions for a
         description of parameters and return values.
 
         Returns
         -------
-        X, Y, weights
+        X, Y, sample_weight
             Converted inputs for safe downstream processing.
         """
 
@@ -268,11 +238,11 @@ class PLS(BaseEstimator):
         new_Y = self._convert_input_to_array(arr=Y)
         copy_X = copy and (np.may_share_memory(new_X, X))
         copy_Y = copy and (np.may_share_memory(new_Y, Y))
-        weights = self._convert_input_to_array(arr=weights)
-        if weights is not None:
-            self._check_nonnegative_weights(weights=weights)
+        sample_weight = self._convert_input_to_array(arr=sample_weight)
+        if sample_weight is not None:
+            self._check_nonnegative_weights(sample_weight=sample_weight)
         new_X, new_Y = self._copy_arrays(copy_X=copy_X, copy_Y=copy_Y, X=new_X, Y=new_Y)
-        return new_X, new_Y, weights
+        return new_X, new_Y, sample_weight
 
     def _center_scale_X_Y(
         self,
@@ -347,13 +317,13 @@ class PLS(BaseEstimator):
                 Y += self.Y_mean
         return (X, Y)
 
-    def _check_nonnegative_weights(self, weights: npt.NDArray[np.floating]) -> None:
+    def _check_nonnegative_weights(self, sample_weight: npt.NDArray[np.floating]) -> None:
         """
         Checks that weights are non-negative.
 
         Parameters
         ----------
-        weights : Array of shape (N, 1)
+        sample_weight : Array of shape (N, 1)
             Sample weights used to fit PLS.
 
         Returns
@@ -365,7 +335,7 @@ class PLS(BaseEstimator):
         ValueError
             If weights are not all non-negative.
         """
-        if np.any(weights < 0):
+        if np.any(sample_weight < 0):
             raise ValueError("Weights must be non-negative.")
 
     def _check_num_nonzero_weights_greater_than_ddof(
@@ -400,7 +370,7 @@ class PLS(BaseEstimator):
         self,
         X: npt.NDArray[np.floating],
         Y: npt.NDArray[np.floating],
-        weights: Optional[npt.NDArray[np.floating]],
+        sample_weight: Optional[npt.NDArray[np.floating]],
     ) -> None:
         """
         Computes the weighted means and standard deviations for `X` and `Y`.
@@ -413,7 +383,7 @@ class PLS(BaseEstimator):
         Y : Array of shape (N, M):
             Response variables.
 
-        weights : Array of shape (N, 1) or None
+        sample_weight : Array of shape (N, 1) or None
             Sample weights.
 
         Attributes
@@ -441,20 +411,20 @@ class PLS(BaseEstimator):
         Raises
         ------
         ValueError
-            If `weights` are provided and scaling of `X` or `Y` is required and the
+            If `sample_weight` are provided and scaling of `X` or `Y` is required and the
             number of non-negative weights is less or equal to `self.ddof`.
         """
         if not (self.center_X or self.center_Y or self.scale_X or self.scale_Y):
             return
-        if weights is not None:
-            flattened_weights = weights.flatten()
+        if sample_weight is not None:
+            flattened_weights = sample_weight.flatten()
             if self.scale_X or self.scale_Y:
-                num_non_zero_weights = np.count_nonzero(weights)
+                num_non_zero_weights = np.count_nonzero(sample_weight)
                 self._check_num_nonzero_weights_greater_than_ddof(
                     num_nonzero_weights=num_non_zero_weights
                 )
                 scale_dof = num_non_zero_weights - self.ddof
-                avg_non_zero_weights = np.sum(weights) / num_non_zero_weights
+                avg_non_zero_weights = np.sum(sample_weight) / num_non_zero_weights
         else:
             flattened_weights = None
 
@@ -471,7 +441,7 @@ class PLS(BaseEstimator):
             )
 
         if self.scale_X:
-            if weights is None:
+            if sample_weight is None:
                 self.X_std = X.std(
                     axis=0,
                     ddof=self.ddof,
@@ -481,13 +451,13 @@ class PLS(BaseEstimator):
                 )
             else:
                 self.X_std = np.sqrt(
-                    np.sum(weights * (X - self.X_mean) ** 2, axis=0, keepdims=True)
+                    np.sum(sample_weight * (X - self.X_mean) ** 2, axis=0, keepdims=True)
                     / (scale_dof * avg_non_zero_weights)
                 )
             self.X_std[self.X_std <= self.eps] = 1
 
         if self.scale_Y:
-            if weights is None:
+            if sample_weight is None:
                 self.Y_std = Y.std(
                     axis=0,
                     ddof=self.ddof,
@@ -497,7 +467,7 @@ class PLS(BaseEstimator):
                 )
             else:
                 self.Y_std = np.sqrt(
-                    np.sum(weights * (Y - self.Y_mean) ** 2, axis=0, keepdims=True)
+                    np.sum(sample_weight * (Y - self.Y_mean) ** 2, axis=0, keepdims=True)
                     / (scale_dof * avg_non_zero_weights)
                 )
             self.Y_std[self.Y_std <= self.eps] = 1
@@ -507,7 +477,7 @@ class PLS(BaseEstimator):
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
-        weights: Optional[npt.ArrayLike] = None,
+        sample_weight: Optional[npt.ArrayLike] = None,
     ) -> Self:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
@@ -523,7 +493,7 @@ class PLS(BaseEstimator):
         A : int
             Number of components in the PLS model.
 
-        weights : Array of shape (N,) or None, optional, default=None
+        sample_weight : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
 
@@ -557,6 +527,12 @@ class PLS(BaseEstimator):
             shape (M, n_components) where n_components is the key. Values are computed
             lazily and cached upon first access. See Notes for more information.
 
+        C : Array of shape (M, A)
+            PLS Y-weights. In Improved Kernel PLS these equal the Y-loadings Q
+            (matching scikit-learn's PLSRegression, whose Y-weights equal its
+            Y-loadings). Exposed as an alias of Q under the conventional Y-weights
+            name.
+
         T : Array of shape (N, A)
             PLS scores matrix of X. Only assigned for Improved Kernel PLS Algorithm #1.
             IMPORTANT: If weights are provided, these are NOT the scores of X but
@@ -587,10 +563,10 @@ class PLS(BaseEstimator):
         Raises
         ------
         ValueError
-            If `weights` are provided and not all weights are non-negative.
+            If `sample_weight` are provided and not all weights are non-negative.
 
         ValueError
-            If `weights` are provided, and `scale_X` or `scale_Y` is True, and the
+            If `sample_weight` are provided, and `scale_X` or `scale_Y` is True, and the
             number of non-zero weights is not greater than `ddof`.
 
         Warns
@@ -613,8 +589,8 @@ class PLS(BaseEstimator):
         is cached for fast future retrieval. R_Y is implemented as a concrete Mapping.
         """
         self.fitted_ = True
-        X, Y, weights = self._get_input(copy=self.copy, X=X, Y=Y, weights=weights)
-        self._compute_mean_and_std(X=X, Y=Y, weights=weights)
+        X, Y, sample_weight = self._get_input(copy=self.copy, X=X, Y=Y, sample_weight=sample_weight)
+        self._compute_mean_and_std(X=X, Y=Y, sample_weight=sample_weight)
         X, Y = self._center_scale_X_Y(X=X, Y=Y)
 
         N, K = X.shape
@@ -627,24 +603,24 @@ class PLS(BaseEstimator):
         self.M = M
 
         # Step 1
-        if weights is not None:
+        if sample_weight is not None:
             if self.algorithm == 2 or K < M:
-                XTW = (X * weights).T
+                XTW = (X * sample_weight).T
                 XTY = XTW @ Y
             else:
-                XTY = X.T @ (Y * weights)
+                XTY = X.T @ (Y * sample_weight)
         else:
             XTY = X.T @ Y
 
         # Used for algorithm #2
         if self.algorithm == 2:
-            if weights is not None:
+            if sample_weight is not None:
                 XTX = XTW @ X
             else:
                 XTX = X.T @ X
         else:
-            if weights is not None:
-                X = np.sqrt(weights) * X
+            if sample_weight is not None:
+                X = np.sqrt(sample_weight) * X
 
         # Execute Improved Kernel PLS steps 2-5 (shared with fast cross-validation).
         self.B, W, P, Q, R, T = improved_kernel_pls_inner_loop(
@@ -662,8 +638,9 @@ class PLS(BaseEstimator):
         self.W = W
         self.P = P
         self.Q = Q
+        self.C = self.Q  # Y-weights == Y-loadings (see the C attribute docs)
         self.R = R
-        self.R_Y = _R_Y_Mapping(self.Q)
+        self.R_Y = _R_Y_Mapping(self.Q, backend="numpy")
         if self.algorithm == 1:
             self.T = T
 
@@ -791,7 +768,7 @@ class PLS(BaseEstimator):
         X: npt.ArrayLike,
         Y: npt.ArrayLike,
         A: int,
-        weights: Optional[npt.ArrayLike] = None,
+        sample_weight: Optional[npt.ArrayLike] = None,
     ) -> Tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components and
@@ -808,7 +785,7 @@ class PLS(BaseEstimator):
         A : int
             Number of components in the PLS model.
 
-        weights : Array of shape (N,) or None, optional, default=None
+        sample_weight : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
 
@@ -825,8 +802,8 @@ class PLS(BaseEstimator):
         transform : Transforms `X` and `Y` to their respective scores.
         inverse_transform : Reconstructs `X` and `Y` from their respective scores.
         """
-        self.fit(X=X, Y=Y, A=A, weights=weights)
-        if self.algorithm == 1 and weights is None:
+        self.fit(X=X, Y=Y, A=A, sample_weight=sample_weight)
+        if self.algorithm == 1 and sample_weight is None:
             return np.copy(self.T), self.transform(Y=Y)
         return self.transform(X=X, Y=Y)
 
@@ -950,7 +927,7 @@ class PLS(BaseEstimator):
                 ],
             ],
         ] = None,
-        weights: Optional[npt.ArrayLike] = None,
+        sample_weight: Optional[npt.ArrayLike] = None,
         n_jobs: int = -1,
         verbose: int = 10,
     ) -> dict[Hashable, Any]:
@@ -960,7 +937,7 @@ class PLS(BaseEstimator):
         and scaling as determined by `self.center_X`, `self.center_Y`, `self.scale_X`,
         and `self.scale_Y`. Any such potential centering and scaling is applied for
         each split using training set statistics to avoid data leakage from the
-        validation set. If `weights` are provided, then these will be provided in
+        validation set. If `sample_weight` are provided, then these will be provided in
         `preprocessing_function` and `metric_function` and used for any centering and
         scaling in the cross-validation procedure.
 
@@ -980,7 +957,7 @@ class PLS(BaseEstimator):
             `folds` corresponds to a different fold.
 
         metric_function : Callable receiving arrays `Y_val` (N_val, M), `Y_pred`\
-        (A, N_val, M), and, if `weights` is not None, also, `weights_val` (N_val,),\
+        (A, N_val, M), and, if `sample_weight` is not None, also, `weights_val` (N_val,),\
         and returning Any.
             Computes a metric based on true values `Y_val` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
@@ -989,11 +966,11 @@ class PLS(BaseEstimator):
             A function that preprocesses the training and validation data for each
             fold. It should return preprocessed arrays for `X_train`, `Y_train`,
             `X_val`, and `Y_val`. If Callable, it should receive arrays `X_train`,
-            `Y_train`, `X_val`, `Y_val`, and, if `weights` is not None, also
+            `Y_train`, `X_val`, `Y_val`, and, if `sample_weight` is not None, also
             `weights_train`, and `weights_val`, and returning a Tuple of preprocessed
             `X_train`, `Y_train`, `X_val`, and `Y_val`.
 
-        weights : Array of shape (N,) or None, optional, default=None
+        sample_weight : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
 
@@ -1014,18 +991,18 @@ class PLS(BaseEstimator):
         Raises
         ------
         ValueError
-            If `weights` are provided and not all weights are non-negative.
+            If `sample_weight` are provided and not all weights are non-negative.
 
         Notes
         -----
         This method is used to perform cross-validation on the PLS model with different
         data splits and evaluate its performance using user-defined metrics.
         """
-        X, Y, weights = self._get_input(copy=False, X=X, Y=Y, weights=weights)
+        X, Y, sample_weight = self._get_input(copy=False, X=X, Y=Y, sample_weight=sample_weight)
 
-        if weights is not None:
-            self._check_nonnegative_weights(weights=weights)
-            flattened_weights = weights.squeeze()
+        if sample_weight is not None:
+            self._check_nonnegative_weights(sample_weight=sample_weight)
+            flattened_weights = sample_weight.squeeze()
         else:
             flattened_weights = None
 

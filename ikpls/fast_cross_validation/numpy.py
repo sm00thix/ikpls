@@ -22,7 +22,7 @@ from cvmatrix.cvmatrix import CVMatrix
 from cvmatrix.partitioner import Partitioner
 from joblib import Parallel, delayed
 
-from ikpls._pls_steps import improved_kernel_pls_inner_loop
+from ikpls._impl.pls_steps import improved_kernel_pls_inner_loop
 
 
 class PLS:
@@ -59,7 +59,7 @@ class PLS:
         column-wise standard deviations. The row of column-wise standard deviations is
         computed on the training set for each fold to avoid data leakage.
 
-    ddof : int, default=1
+    ddof : int, default=0
         The delta degrees of freedom to use when computing the sample standard
         deviation. A value of 0 corresponds to the biased estimate of the sample
         standard deviation, while a value of 1 corresponds to Bessel's correction for
@@ -72,9 +72,9 @@ class PLS:
         to propagation of numerical errors.
 
     copy : bool, default=True
-        Whether to copy `X`, `Y`, and `weights` when cross-validating. If True or the
+        Whether to copy `X`, `Y`, and `sample_weight` when cross-validating. If True or the
         data is not already arrays of the specified `dtype`, then the data is copied.
-        Otherwise, the data is not copied and changes to `X`, `Y`, and `weights`
+        Otherwise, the data is not copied and changes to `X`, `Y`, and `sample_weight`
         outside may affect the results of the cross-validation.
 
     Raises
@@ -101,7 +101,7 @@ class PLS:
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
-        ddof: int = 1,
+        ddof: int = 0,
         copy: bool = True,
         dtype: type[np.floating] = np.float64,
     ) -> None:
@@ -368,7 +368,7 @@ class PLS:
             samples.
 
         metric_function : Callable receiving arrays `Y_true` and `Y_pred`, and, if
-        `self.weights` is not None, also `weights`, and returning Any.
+        `self.cvm.weights` is not None, also `sample_weight`, and returning Any.
 
         Returns
         -------
@@ -392,8 +392,8 @@ class PLS:
         Y_true = self.cvm.Y[validation_indices]
         if self.cvm.weights is None:
             return metric_function(Y_true, Y_pred)
-        weights = self.cvm.weights[validation_indices].flatten()
-        return metric_function(Y_true, Y_pred, weights)
+        sample_weight = self.cvm.weights[validation_indices].flatten()
+        return metric_function(Y_true, Y_pred, sample_weight)
 
     def cross_validate(
         self,
@@ -402,7 +402,7 @@ class PLS:
         A: int,
         folds: Iterable[Hashable],
         metric_function: Callable[[npt.ArrayLike, npt.ArrayLike], Any],
-        weights: Optional[npt.ArrayLike] = None,
+        sample_weight: Optional[npt.ArrayLike] = None,
         n_jobs=-1,
         verbose=10,
     ) -> dict[Hashable, Any]:
@@ -426,12 +426,12 @@ class PLS:
             `folds` corresponds to a different fold.
 
         metric_function : Callable receiving arrays `Y_val` (N_val, M), `Y_pred`\
-        (A, N_val, M), and, if `weights` is not None, also, `weights_val` (N_val,),\
+        (A, N_val, M), and, if `sample_weight` is not None, also, `weights_val` (N_val,),\
         and returning Any.
             Computes a metric based on true values `Y_val` and predicted values
             `Y_pred`. `Y_pred` contains a prediction for all `A` components.
 
-        weights : Array of shape (N,) or None, optional, default=None
+        sample_weight : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, then all observations are weighted
             equally.
 
@@ -452,7 +452,7 @@ class PLS:
         Raises
         ------
         ValueError
-            If `weights` are provided and not all weights are non-negative.
+            If `sample_weight` are provided and not all weights are non-negative.
 
         Notes
         -----
@@ -486,15 +486,20 @@ class PLS:
             f"parallel processes."
         )
 
-        self.cvm.fit(X, Y, weights)
+        self.cvm.fit(X, Y, sample_weight)
         self.A = A
         self.N, self.K = self.cvm.X.shape
         self.M = self.cvm.Y.shape[1]
 
         if self.algorithm == 1:
             self.all_indices = np.arange(self.cvm.N, dtype=int)
-            if weights is not None:
+            if sample_weight is not None:
                 self.sqrt_weights = np.sqrt(self.cvm.weights)
+            else:
+                # Reset any sqrt-weights left over from a previous weighted
+                # cross_validate on this instance: a stale value would silently
+                # weight the training rows of an unweighted run.
+                self.sqrt_weights = None
 
         def worker(
             validation_indices: npt.NDArray[np.int_],

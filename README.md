@@ -12,6 +12,8 @@
 
 [![Documentation Status](https://readthedocs.org/projects/ikpls/badge/?version=latest)](https://ikpls.readthedocs.io/en/latest/?badge=latest)
 
+[![CodeFactor](https://www.codefactor.io/repository/github/sm00thix/ikpls/badge/main)](https://www.codefactor.io/repository/github/sm00thix/ikpls/overview/main)
+
 [![Tests Status](https://github.com/Sm00thix/IKPLS/actions/workflows/test_workflow.yml/badge.svg)](https://github.com/Sm00thix/IKPLS/actions/workflows/test_workflow.yml)
 
 [![Test Coverage](https://coveralls.io/repos/github/sm00thix/ikpls/badge.svg?branch=main)](https://coveralls.io/github/sm00thix/ikpls?branch=main)
@@ -29,9 +31,10 @@ If you use the `ikpls` software package for your work, please cite [this Journal
 
 Dive into cutting-edge Python implementations of the IKPLS (Improved Kernel Partial Least Squares) Algorithms #1 and #2 [[1]](#references) for CPUs, GPUs, and TPUs. IKPLS is both fast [[2]](#references) and numerically stable [[3]](#references) making it optimal for PLS modeling.
 
-- Use our NumPy [[4]](#references) based CPU implementations for **seamless integration with
+- Use our NumPy [[4]](#references) based CPU implementations for fast PLS on the CPU, and our
+scikit-learn-conformant `ikpls.sklearn.PLS` wrapper for **seamless integration with
 scikit-learn\'s** [[5]](#references) **ecosystem** of machine learning algorithms and pipelines. As the
-implementations subclass scikit-learn's BaseEstimator, they can be used with scikit-learn\'s
+wrapper conforms to the scikit-learn estimator API, it can be used with scikit-learn\'s
 [cross_validate](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_validate.html).
 - Use our JAX [[6]](#references) implementations on CPUs or **leverage powerful GPUs and TPUs for PLS modelling**.
   Our JAX implementations are **end-to-end differentiable** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
@@ -71,10 +74,12 @@ cross-validation algorithm.
     pip3 install ikpls
     ```
 
-- Now you can import the NumPy implementations with:
+- Now you can import the NumPy and sklearn implementations with:
     ```python
-    from ikpls.numpy_ikpls import PLS as NpPLS
-    from ikpls.fast_cross_validation.numpy_ikpls import PLS as NpPLS_FastCV
+    from ikpls.numpy import PLS as NpPLS
+    from ikpls.fast_cross_validation.numpy import PLS as NpPLS_FastCV
+
+    from ikpls.sklearn import PLS as SkPLS
     ```
 
 - You can also install the optional JAX dependency to get JAX implementations of IKPLS
@@ -83,9 +88,10 @@ cross-validation algorithm.
     ```
 - Now, you can import the JAX implementations with:
     ```python
-    from ikpls.jax_ikpls_alg_1 import PLS as JAXPLS_Alg_1
-    from ikpls.jax_ikpls_alg_2 import PLS as JAXPLS_Alg_2
-    from ikpls.fast_cross_validation.jax_ikpls import PLS as JAXPLS_FastCV
+    # The JAX PLS takes an `algorithm` argument (1 or 2), like the NumPy PLS,
+    # e.g. JAXPLS(algorithm=1) or JAXPLS(algorithm=2).
+    from ikpls.jax import PLS as JAXPLS
+    from ikpls.fast_cross_validation.jax import PLS as JAXPLS_FastCV
     ```
 
 ### Prerequisites for JAX
@@ -122,7 +128,7 @@ jax.config.update("jax_enable_x64", True)
 > ```python
 > import numpy as np
 >
-> from ikpls.numpy_ikpls import PLS
+> from ikpls.sklearn import PLS
 >
 >
 > N = 100  # Number of samples.
@@ -130,55 +136,71 @@ jax.config.update("jax_enable_x64", True)
 > M = 10  # Number of targets.
 > A = 20  # Number of latent variables (PLS components).
 >
-> X = np.random.uniform(size=(N, K)) # Predictor variables
-> Y = np.random.uniform(size=(N, M)) # Target variables
-> w = np.random.uniform(size=(N, )) # sample weights
+> X = np.random.uniform(size=(N, K))  # Predictor variables
+> Y = np.random.uniform(size=(N, M))  # Target variables
+> w = np.random.uniform(size=(N,))  # Sample weights (optional)
 >
-> # The other PLS algorithms and implementations have the same interface for fit()
-> # and predict(). The fast cross-validation implementation with IKPLS has a
-> # different interface.
-> np_ikpls_alg_1 = PLS(algorithm=1)
-> np_ikpls_alg_1.fit(X, Y, A, w)
+> # ikpls.sklearn.PLS is a scikit-learn-conformant estimator wrapping
+> # ikpls.numpy.PLS, so it plugs straight into Pipeline, GridSearchCV, and
+> # cross_validate. The number of components is set on the constructor, and
+> # fit(X, y) follows the scikit-learn API. algorithm=1 or 2 selects the
+> # Improved Kernel PLS algorithm.
+> pls = PLS(n_components=A, algorithm=1)
+> pls.fit(X, Y)  # Pass sample_weight=w for weighted PLS.
 >
-> # Has shape (A, N, M) = (20, 100, 10). Contains a prediction for all possible
-> # numbers of components up to and including A.
-> y_pred = np_ikpls_alg_1.predict(X)
+> # --- Prediction -------------------------------------------------------------
 >
-> # Has shape (N, M) = (100, 10).
-> y_pred_20_components = np_ikpls_alg_1.predict(X, n_components=20)
-> (y_pred_20_components == y_pred[19]).all()  # True
+> # predict() uses n_components (= A) components. Has shape (N, M) = (100, 10).
+> Y_pred = pls.predict(X)
 >
-> # The internal model parameters can be accessed as follows:
+> # predict_all_components() keeps ikpls's vectorized feature of predicting with
+> # every number of components 1..A in a single call. Shape (A, N, M) =
+> # (20, 100, 10); the last slice uses all A components.
+> Y_pred_all = pls.predict_all_components(X)
+> (Y_pred_all[A - 1] == Y_pred).all()  # True
 >
-> # Regression coefficients tensor of shape (A, K, M) = (20, 50, 10).
-> np_ikpls_alg_1.B
+> # --- Fitted attributes (scikit-learn PLSRegression conventions) -------------
 >
 > # X weights matrix of shape (K, A) = (50, 20).
-> np_ikpls_alg_1.W
+> pls.x_weights_
+>
+> # Y weights matrix of shape (M, A) = (10, 20). In Improved Kernel PLS this
+> # equals y_loadings_, matching sklearn.cross_decomposition.PLSRegression.
+> pls.y_weights_
 >
 > # X loadings matrix of shape (K, A) = (50, 20).
-> np_ikpls_alg_1.P
+> pls.x_loadings_
 >
 > # Y loadings matrix of shape (M, A) = (10, 20).
-> np_ikpls_alg_1.Q
+> pls.y_loadings_
 >
 > # X rotations matrix of shape (K, A) = (50, 20).
-> np_ikpls_alg_1.R
+> pls.x_rotations_
 >
-> # Mapping from n_components to Y rotations matrix of shape (M, n_components).
-> # This is not required to compute np_ikpls_alg_1.B and is therefore lazily evaluated and cached.
-> np_ikpls_alg_1.R_Y
+> # Y rotations matrix of shape (M, A) = (10, 20). Lazily computed and cached on
+> # first access (it needs a pseudo-inverse that fit() does not otherwise pay for).
+> pls.y_rotations_
 >
-> # Y rotations matrix of shape (M, A) = (10, 20)
-> np_ikpls_alg_1.R_Y[20] # R_Y is now cached for 20 components.
+> # Regression coefficients of shape (M, K) = (10, 50) and intercept of shape
+> # (M,) = (10,). Following scikit-learn, predict effectively centers X, so
+> # predict(X) == (X - X_mean) @ coef_.T + intercept_.
+> pls.coef_
+> pls.intercept_
 >
-> # Y rotations matrix for 19 components of shape (M, 19) = (10, 19)
-> # This is NOT the same as np_ikpls_alg_1.R_Y[20][:, :19]
-> np_ikpls_alg_1.R_Y[19] # R_Y is now cached for 20 and 19 components.
+> # --- Transform to score space and reconstruct -------------------------------
 >
-> # X scores matrix of shape (N, A) = (100, 20).
-> # This is only computed for IKPLS Algorithm #1.
-> np_ikpls_alg_1.T
+> # Project X onto the latent space. X scores have shape (N, A) = (100, 20).
+> x_scores = pls.transform(X)
+>
+> # Passing Y as well returns both X scores and Y scores, each (N, A) = (100, 20).
+> x_scores, y_scores = pls.transform(X, Y)
+>
+> # inverse_transform maps scores back to the original space: X_reconstructed has
+> # shape (N, K) = (100, 50) and Y_reconstructed has shape (N, M) = (100, 10). The
+> # round trip is exact only when n_components equals n_features / n_targets, so
+> # with A < K this is an approximate (dimensionality-reduced) reconstruction.
+> X_reconstructed = pls.inverse_transform(x_scores)
+> X_reconstructed, Y_reconstructed = pls.inverse_transform(x_scores, y_scores)
 > ```
 
 ### Examples
@@ -190,7 +212,7 @@ will find:
 -   [Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fit_predict_jax.py)
 -   [Fit and Predict on many datasets at once with JAX and `jax.vmap` (e.g. 10,000 independent fits and predicts).](https://github.com/Sm00thix/IKPLS/tree/main/examples/vmap_fit_predict_jax.py)
 -   [Cross-validate with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy.py)
--   [Cross-validate with NumPy and scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_numpy_sklearn.py)
+-   [Cross-validate with scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_sklearn.py)
 -   [Cross-validate with NumPy and fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_numpy.py)
 -   [Cross-validate with NumPy and weighted fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_weighted_cross_val_numpy.py)
 -   [Cross-validate with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_jax.py)
@@ -200,12 +222,13 @@ will find:
 -   [Weighted Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_fit_predict_jax.py)
 -   [Weighted cross-validation with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_numpy.py)
 -   [Weighted cross-validation with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_jax.py)
+-   [Weighted cross-validation with scikit-learn.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_cross_val_sklearn.py)
 -   [Fit, transform to score space, and inverse transform with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/transform_numpy.py)
 -   [Fit, transform to score space, and inverse transform with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/transform_jax.py)
 
 ## Changelog
    
-See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+See [CHANGELOG.md](https://github.com/Sm00thix/IKPLS/blob/main/CHANGELOG.md) for version history and release notes.
 
 ## Contribute
 

@@ -18,22 +18,22 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.fast_cross_validation.numpy_ikpls import PLS
+from ikpls.fast_cross_validation.numpy import PLS
 
 
-def wmse_for_each_target(Y_true, Y_pred, weights):
+def wmse_for_each_target(Y_true, Y_pred, sample_weight):
     """
     We can return anything we want. Here, we compute the mean squared error for each
     target and the number of components that achieves the lowest MSE for each target.
     """
     # Y_true has shape (N_val, M)
     # Y_pred has shape (A, N_val, M)
-    # weights has shape (N_val,)
+    # sample_weight has shape (N_val,)
     e = Y_true - Y_pred  # Shape (A, N_val, M)
     se = e**2  # Shape (A, N_val, M)
 
     # Compute the mean over samples. Shape (A, M).
-    wmse = np.average(se, axis=-2, weights=weights)
+    wmse = np.average(se, axis=-2, weights=sample_weight)
 
     # The number of components that minimizes the WMSE for each target. Shape (M,).
     row_idxs = np.argmin(wmse, axis=0)
@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     X = np.random.uniform(size=(N, K))
     Y = np.random.uniform(size=(N, M))
-    weights = np.random.uniform(size=N)  # Random weights for each sample.
+    sample_weight = np.random.uniform(size=N)  # Random weight for each sample.
 
     # For this example, we will use IKPLS Algorithm #1.
     # The interface for IKPLS Algorithm #2 is identical.
@@ -94,7 +94,7 @@ if __name__ == "__main__":
         A=A,
         folds=splits,
         metric_function=wmse_for_each_target,
-        weights=weights,
+        sample_weight=sample_weight,
         n_jobs=-1,
         verbose=10,
     )
@@ -130,3 +130,6 @@ if __name__ == "__main__":
             for i in range(M)
         ]
     )
+
+    print("Lowest weighted validation MSE per target per split:\n", lowest_val_wmses)
+    print("Best number of components per target per split:\n", best_num_components)

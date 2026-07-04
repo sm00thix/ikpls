@@ -12,6 +12,7 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ole.e@di.ku.dk
 """
 
+import os
 import sys
 import warnings
 from collections.abc import Callable
@@ -23,26 +24,385 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from jax import numpy as jnp
-from numpy.testing import assert_allclose
+from numpy.testing import assert_array_equal
 from sklearn.cross_decomposition import PLSRegression as SkPLS
 from sklearn.datasets import load_linnerud
 from sklearn.exceptions import NotFittedError
 from sklearn.model_selection import cross_validate
+from sklearn.utils._testing import assert_allclose
 
-from ikpls.fast_cross_validation.jax_ikpls import PLS as JaxFastCVPLS
-from ikpls.fast_cross_validation.numpy_ikpls import PLS as FastCVPLS
-from ikpls.jax_ikpls_alg_1 import PLS as JAX_Alg_1
-from ikpls.jax_ikpls_alg_2 import PLS as JAX_Alg_2
-from ikpls.numpy_ikpls import PLS as NpPLS
+from ikpls._impl.jax_alg_1 import PLS as JAX_Alg_1
+from ikpls._impl.jax_alg_2 import PLS as JAX_Alg_2
+from ikpls.fast_cross_validation.jax import PLS as JaxFastCVPLS
+from ikpls.fast_cross_validation.numpy import PLS as FastCVPLS
+from ikpls.numpy import PLS as NpPLS
+from ikpls.sklearn import PLS as SklearnPLS
 
 from . import load_data
 
 # Allow JAX to use 64-bit floating point precision.
 jax.config.update("jax_enable_x64", True)
 
-# Disable the JAX JIT compiler for all tests. This is done to avoid issues with the
-# GitHub hosted Ubuntu runners that will otherwise run out of memory.
-jax.config.update("jax_disable_jit", True)
+# Disable the JAX JIT compiler for all tests by default. This avoids issues with the
+# GitHub-hosted Ubuntu runners that would otherwise run out of memory. Set the
+# environment variable IKPLS_TEST_JIT=1 to run the suite WITH JIT enabled (e.g.
+# locally, where more memory is available) to exercise the compiled JAX code paths.
+jax.config.update(
+    "jax_disable_jit", os.environ.get("IKPLS_TEST_JIT", "0") != "1"
+)
+
+
+def test_y_weights_equal_y_loadings():
+    """The native Y-weights ``C`` are exposed as the Y-loadings ``Q``.
+
+    This matches scikit-learn's ``PLSRegression`` convention, where
+    ``y_weights_ == y_loadings_``. ``C`` is a zero-cost alias of ``Q`` (no extra
+    computation, so it never affects ``fit`` performance). This fast, network-free
+    test covers the contract, not-fitted behaviour, dtype and the prefix property
+    for the NumPy and both JAX implementations.
+    """
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((30, 6))
+    Y = rng.standard_normal((30, 3))
+    A = 4
+
+    # Before fit, C mirrors Q (both None); after fit, C IS Q (same object, alias).
+    for cls in (NpPLS, JAX_Alg_1, JAX_Alg_2):
+        m = cls()
+        assert m.C is None
+        m.fit(X, Y, A=A)
+        assert m.C is m.Q
+        assert np.asarray(m.C).shape == (Y.shape[1], A)
+
+    # dtype follows the model dtype (numpy and jax, float64 and float32).
+    for dtype in (np.float64, np.float32):
+        assert NpPLS(dtype=dtype).fit(X, Y, A=A).C.dtype == dtype
+        assert JAX_Alg_1(dtype=dtype).fit(X, Y, A=A).C.dtype == dtype
+        assert JAX_Alg_2(dtype=dtype).fit(X, Y, A=A).C.dtype == dtype
+
+    # Prefix property: because PLS components are computed sequentially, the first
+    # k columns of an A-component fit equal a k-component fit (unlike R_Y, whose
+    # pseudo-inverse couples columns across the requested number of components).
+    m_full = NpPLS().fit(X, Y, A=A)
+    for k in range(1, A + 1):
+        m_k = NpPLS().fit(X, Y, A=k)
+        assert_allclose(np.abs(m_full.C[:, :k]), np.abs(m_k.C), atol=1e-8, rtol=1e-6)
+
+    # Refit invalidation: C tracks Q across a refit with a different component
+    # count (it is an alias, not a fit-time snapshot).
+    for cls in (NpPLS, JAX_Alg_1, JAX_Alg_2):
+        m = cls().fit(X, Y, A=A)
+        m.fit(X, Y, A=2)
+        assert m.C is m.Q
+        assert np.asarray(m.C).shape == (Y.shape[1], 2)
+
+
+def test_sklearn_wrapper_forwards_params_to_inner():
+    """The ikpls.sklearn.PLS wrapper forwards its constructor parameters to the
+    inner ikpls.numpy.PLS and produces identical results.
+
+    This catches a mismatch between the parameters supplied to the wrapper and
+    those passed to its ``inner_`` model (e.g. a wrong ``algorithm`` or a
+    center/scale flag not forwarded): for each algorithm and center/scale
+    combination the inner model must carry the same parameters, and the wrapper's
+    predictions must equal the native model's for the same number of components.
+    """
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((40, 7))
+    Y = rng.standard_normal((40, 3))
+    A = 4
+    combos = [
+        (True, True, True, True),
+        (False, False, False, False),
+        (True, False, True, False),
+        (False, True, False, True),
+    ]
+    for algorithm in (1, 2):
+        for center_X, center_Y, scale_X, scale_Y in combos:
+            kwargs = dict(
+                algorithm=algorithm,
+                center_X=center_X,
+                center_Y=center_Y,
+                scale_X=scale_X,
+                scale_Y=scale_Y,
+                ddof=1,
+            )
+            wrapper = SklearnPLS(n_components=A, **kwargs).fit(X, Y)
+            native = NpPLS(**kwargs).fit(X, Y, A=A)
+
+            inner = wrapper.inner_
+            assert inner.algorithm == algorithm
+            assert inner.center_X == center_X
+            assert inner.center_Y == center_Y
+            assert inner.scale_X == scale_X
+            assert inner.scale_Y == scale_Y
+            assert inner.ddof == 1
+
+            assert_allclose(
+                np.asarray(wrapper.predict(X)),
+                np.asarray(native.predict(X, n_components=A)),
+                atol=1e-12,
+                rtol=1e-9,
+            )
+
+    # dtype must forward too: a float32 wrapper must build a float32 inner model
+    # and expose float32 fitted attributes and transforms.
+    wrapper32 = SklearnPLS(n_components=A, dtype=np.float32).fit(X, Y)
+    assert wrapper32.inner_.dtype == np.float32
+    assert wrapper32.coef_.dtype == np.float32
+    assert wrapper32.x_weights_.dtype == np.float32
+    assert wrapper32.y_rotations_.dtype == np.float32
+    assert wrapper32.transform(X).dtype == np.float32
+
+
+def test_scale_and_stability():
+    """Internal scaling on raw data is equivalent to no scaling on pre-standardized
+    data, and all fitted quantities stay finite on degenerate inputs.
+
+    Adapted from scikit-learn's ``test_scale_and_stability``. The datasets include a
+    constant feature (``std == 0``), a huge-magnitude case, and a small
+    rank-deficient case, which the well-conditioned spectra/Linnerud fixtures do not
+    stress. Exercised for the NumPy and JAX native classes and the sklearn wrapper.
+    """
+    rng = np.random.default_rng(0)
+    Xw = rng.standard_normal((60, 8))
+    Yw = rng.standard_normal((60, 3))
+    Xc = Xw.copy()
+    Xc[:, 0] = 3.14  # a constant feature -> std == 0 (guarded to 1 internally)
+    Xr = rng.standard_normal((8, 4))
+    Yr = rng.standard_normal((8, 2))
+    datasets = [
+        ("well_conditioned", Xw, Yw, 5),
+        ("huge_magnitude", Xw * 1000.0, Yw * 1000.0, 5),
+        ("constant_feature", Xc, Yw, 5),
+        ("rank_deficient", Xr, Yr, 3),
+    ]
+    for name, X, Y, A in datasets:
+        jnp_X, jnp_Y = jnp.asarray(X), jnp.asarray(Y)
+        # Every implementation must produce finite results on these inputs.
+        for model, xx, yy in (
+            (NpPLS(algorithm=1, ddof=1), X, Y),
+            (NpPLS(algorithm=2, ddof=1), X, Y),
+            (JAX_Alg_1(ddof=1), jnp_X, jnp_Y),
+            (JAX_Alg_2(ddof=1), jnp_X, jnp_Y),
+        ):
+            model.fit(xx, yy, A=A)
+            assert np.all(np.isfinite(np.asarray(model.W))), name
+            assert np.all(
+                np.isfinite(np.asarray(model.predict(xx, n_components=A)))
+            ), name
+        wrapper = SklearnPLS(n_components=A, algorithm=1, ddof=1).fit(X, Y)
+        assert np.all(np.isfinite(np.asarray(wrapper.predict(X)))), name
+
+        # Equivalence: scaling internally on raw data equals no scaling on data
+        # standardized with the same (ddof=1, eps-guarded) statistics. Both fit the
+        # core algorithm on identical arrays, so the X-scores must agree (compared
+        # over the numerically stable components, up to per-component sign).
+        m_scaled = NpPLS(algorithm=1, ddof=1).fit(X, Y, A=A)
+        Xs = (X - np.asarray(m_scaled.X_mean)) / np.asarray(m_scaled.X_std)
+        Ys = (Y - np.asarray(m_scaled.Y_mean)) / np.asarray(m_scaled.Y_std)
+        m_unscaled = NpPLS(
+            algorithm=1,
+            center_X=False,
+            center_Y=False,
+            scale_X=False,
+            scale_Y=False,
+            ddof=1,
+        ).fit(Xs, Ys, A=A)
+        n = m_scaled.max_stable_components
+        Ts = np.asarray(m_scaled.transform(X, n_components=A))[:, :n]
+        Tu = np.asarray(m_unscaled.transform(Xs, n_components=A))[:, :n]
+        assert_allclose(np.abs(Ts), np.abs(Tu), atol=1e-4, rtol=1e-4, err_msg=name)
+
+
+def test_constant_y_zero_x_rotations():
+    """When Y is entirely constant there is no X-Y covariance, so the X-rotations
+    collapse to zero (mirrors scikit-learn's ``test_pls_constant_y``).
+
+    Verified for the NumPy and JAX native classes and the (NumPy-backed) sklearn
+    wrapper: every backend degrades gracefully to finite zeros rather than NaN for
+    this fully-degenerate input (max_stable_components == 0).
+    """
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((30, 5))
+    Y = np.ones((30, 2))  # entirely constant -> centered Y is zero
+    jnp_X, jnp_Y = jnp.asarray(X), jnp.asarray(Y)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # expected weight-underflow warning
+        for model, xx, yy in (
+            (NpPLS(ddof=1), X, Y),
+            (JAX_Alg_1(ddof=1), jnp_X, jnp_Y),
+            (JAX_Alg_2(ddof=1), jnp_X, jnp_Y),
+        ):
+            model.fit(xx, yy, A=3)
+            R = np.asarray(model.R)
+            assert np.all(np.isfinite(R))
+            assert_allclose(R, 0.0, atol=1e-8)
+        wrapper = SklearnPLS(n_components=3, ddof=1).fit(X, Y)
+    assert_allclose(np.asarray(wrapper.x_rotations_), 0.0, atol=1e-8)
+
+
+def test_jax_reverse_gradients_finite_on_degenerate_scaling_and_overextraction():
+    """Reverse-mode (``jax.grad``) gradients through the JAX fit stay finite for a
+    constant (zero-variance) feature with scaling on -- the standardization is
+    guarded before its square root -- and for over-extracted components on
+    rank-deficient data (whose residuals are tiny-but-nonzero, not exactly zero).
+
+    (Reverse-mode gradients through a fully-degenerate, entirely-constant-Y fit are
+    NOT finite -- the eigendecomposition VJP at repeated eigenvalues is undefined --
+    so that pathological case is deliberately not asserted here.)
+    """
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((30, 5))
+    Y = jnp.asarray(rng.standard_normal((30, 3)))
+    X_const_feature = X.copy()
+    X_const_feature[:, 0] = 7.0  # zero-variance feature (scaling would sqrt(0))
+    X_rank_deficient = X.copy()
+    X_rank_deficient[:, 4] = X[:, 0]  # exact duplicate -> A=5 over-extracts
+
+    for cls in (JAX_Alg_1, JAX_Alg_2):
+        for Xnp in (X_const_feature, X_rank_deficient):
+
+            def loss(X_in, _cls=cls):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    model = _cls(ddof=1)
+                    model.fit(X_in, Y, A=5)
+                return jnp.sum(model.B[-1] ** 2)
+
+            grad = jax.grad(loss)(jnp.asarray(Xnp))
+            assert bool(jnp.all(jnp.isfinite(grad)))
+            # A finite-but-severed (all-zero) gradient would also pass isfinite;
+            # assert the gradient actually flows through the fit.
+            assert bool(jnp.any(grad != 0.0))
+
+
+def test_jax_small_magnitude_unscaled_data_matches_numpy():
+    """The JAX underflow guards must not fire on legitimately small-magnitude data.
+
+    With scaling off, ``t^T t`` on small-magnitude X is tiny but nonzero and must
+    be divided through exactly as NumPy does (NumPy has no ``t^T t`` guard at
+    all). A guard keyed on a tolerance (``tTt <= eps``) instead of exact zero
+    corrupted ``B`` by ~17 orders of magnitude on this input while
+    ``max_stable_components`` still reported every component as stable.
+    """
+    rng = np.random.default_rng(0)
+    X = 1e-9 * rng.standard_normal((10, 5))
+    Y = rng.standard_normal((10, 3))
+    A = 3
+    kwargs = dict(center_X=False, center_Y=False, scale_X=False, scale_Y=False)
+    for jax_cls in (JAX_Alg_1, JAX_Alg_2):
+        np_pls = NpPLS(algorithm=1 if jax_cls is JAX_Alg_1 else 2, **kwargs)
+        np_pls.fit(X, Y, A)
+        jax_pls = jax_cls(**kwargs)
+        jax_pls.fit(X, Y, A)
+        assert jax_pls.max_stable_components == A
+        # B entries are huge (~1e8: Y ~ 1 regressed on X ~ 1e-9); compare on a
+        # normalized scale so the tolerance is magnitude-independent.
+        scale = np.max(np.abs(np_pls.B))
+        assert_allclose(
+            np.asarray(jax_pls.B) / scale, np_pls.B / scale, atol=1e-10, rtol=0
+        )
+
+
+def test_fast_cv_reused_instance_resets_stale_weights():
+    """An unweighted cross_validate after a weighted one on the SAME instance must
+    equal a fresh instance's result: Algorithm #1 stores sqrt-weights to weight
+    its gathered training rows, and a stale value from the previous weighted call
+    must not silently leak into the unweighted run."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((40, 8))
+    Y = rng.standard_normal((40, 2))
+    sample_weight = rng.uniform(0.5, 2.0, size=40)
+    folds = np.arange(40) % 4
+
+    def mse(Y_true, Y_pred, sample_weight=None):
+        return float(np.mean((Y_true - Y_pred) ** 2))
+
+    reused = FastCVPLS(algorithm=1)
+    reused.cross_validate(
+        X, Y, 3, folds, mse, sample_weight=sample_weight, n_jobs=1, verbose=0
+    )
+    reused_res = reused.cross_validate(X, Y, 3, folds, mse, n_jobs=1, verbose=0)
+    fresh_res = FastCVPLS(algorithm=1).cross_validate(
+        X, Y, 3, folds, mse, n_jobs=1, verbose=0
+    )
+    for key in fresh_res:
+        assert_allclose(reused_res[key], fresh_res[key], atol=0, rtol=0)
+
+
+def test_transform_and_inverse_transform_match_sklearn():
+    """transform (X- and Y-scores) and inverse_transform of every implementation
+    -- NumPy and JAX Algorithms #1/#2 and the ikpls.sklearn.PLS wrapper -- match
+    scikit-learn's PLSRegression (NIPALS) on Linnerud.
+
+    Scores are compared up to the per-component sign ambiguity (|T| vs |T_sk|);
+    reconstructions are sign-invariant (the sign flips of T and P cancel in
+    T @ P.T), so they are compared directly. sklearn's NIPALS always centers and
+    scales X and Y with ddof=1 when scale=True, so the ikpls models are
+    configured to match. At full rank (A == n_features) the reconstruction
+    round-trips X exactly for both ikpls and scikit-learn.
+    """
+    data = load_linnerud()
+    X = data.data.astype(np.float64)
+    Y = data.target.astype(np.float64)
+    A = 2  # Reducing (A < K = 3), so the reconstruction is a genuine projection.
+
+    sk_pls = SkPLS(n_components=A, scale=True).fit(X, Y)
+    sk_T, sk_U = sk_pls.transform(X, Y)
+    sk_X_rec, sk_Y_rec = sk_pls.inverse_transform(sk_T, sk_U)
+
+    kwargs = dict(center_X=True, center_Y=True, scale_X=True, scale_Y=True, ddof=1)
+    np_alg_1 = NpPLS(algorithm=1, **kwargs)
+    np_alg_2 = NpPLS(algorithm=2, **kwargs)
+    jax_alg_1 = JAX_Alg_1(**kwargs)
+    jax_alg_2 = JAX_Alg_2(**kwargs)
+    for model in (np_alg_1, np_alg_2, jax_alg_1, jax_alg_2):
+        model.fit(X, Y, A)
+        T, U = model.transform(X=X, Y=Y, n_components=A)
+        T, U = np.asarray(T), np.asarray(U)
+        # Scores match NIPALS up to the per-component sign.
+        assert_allclose(np.abs(T), np.abs(sk_T), atol=1e-4)
+        assert_allclose(np.abs(U), np.abs(sk_U), atol=1e-4)
+        # Reconstructions are sign-invariant and match NIPALS directly.
+        X_rec, Y_rec = model.inverse_transform(T=T, U=U)
+        assert_allclose(np.asarray(X_rec), sk_X_rec, atol=1e-4)
+        assert_allclose(np.asarray(Y_rec), sk_Y_rec, atol=1e-4)
+
+    # The sklearn wrapper: same guarantees through the sklearn-style API.
+    wrapper = SklearnPLS(n_components=A, **kwargs).fit(X, Y)
+    T_only = wrapper.transform(X)
+    T, U = wrapper.transform(X, Y)
+    assert_array_equal(T_only, T)
+    assert_allclose(np.abs(T), np.abs(sk_T), atol=1e-4)
+    assert_allclose(np.abs(U), np.abs(sk_U), atol=1e-4)
+    X_rec_only = wrapper.inverse_transform(T)
+    X_rec, Y_rec = wrapper.inverse_transform(T, U)
+    assert_array_equal(X_rec_only, X_rec)
+    assert_allclose(X_rec, sk_X_rec, atol=1e-4)
+    assert_allclose(Y_rec, sk_Y_rec, atol=1e-4)
+
+    # The wrapper delegates to the native NumPy model bit-for-bit.
+    assert_array_equal(T, np.asarray(np_alg_1.transform(X=X, n_components=A)))
+    assert_array_equal(
+        X_rec, np.asarray(np_alg_1.inverse_transform(T=T))
+    )
+
+    # Full rank (A == K): transform/inverse_transform round-trips X exactly for
+    # ikpls and scikit-learn alike.
+    A_full = X.shape[1]
+    sk_full = SkPLS(n_components=A_full, scale=True).fit(X, Y)
+    for model in (NpPLS(algorithm=1, **kwargs), NpPLS(algorithm=2, **kwargs)):
+        model.fit(X, Y, A_full)
+        rt = np.asarray(
+            model.inverse_transform(T=model.transform(X=X, n_components=A_full))
+        )
+        assert_allclose(rt, X, atol=1e-8)
+    wrapper_full = SklearnPLS(n_components=A_full, **kwargs).fit(X, Y)
+    assert_allclose(
+        wrapper_full.inverse_transform(wrapper_full.transform(X)), X, atol=1e-8
+    )
+    assert_allclose(sk_full.inverse_transform(sk_full.transform(X)), X, atol=1e-8)
 
 
 # Warning raised due to MathJax in some docstrins in the FastCVPLS class.
@@ -122,12 +482,12 @@ class TestClass:
             Weights for the spectral data.
         """
         if kind is None:
-            weights = self.rng.uniform(low=0, high=3, size=self.raw_spectra.shape[0])
+            sample_weight = self.rng.uniform(low=0, high=3, size=self.raw_spectra.shape[0])
             # reset the rng
             self.rng = np.random.default_rng(self.seed)
         else:
-            weights = np.full(self.raw_spectra.shape[0], kind, dtype=np.float64)
-        return weights
+            sample_weight = np.full(self.raw_spectra.shape[0], kind, dtype=np.float64)
+        return sample_weight
 
     def get_model_preds(
         self,
@@ -179,7 +539,7 @@ class TestClass:
         self,
         X: np.ndarray,
         Y: np.ndarray,
-        weights: np.ndarray,
+        sample_weight: np.ndarray,
         center_X: bool,
         center_Y: bool,
         scale_X: bool,
@@ -215,24 +575,24 @@ class TestClass:
         np.ndarray, np.ndarray
             Predicted target values and regression matrix
         """
-        weights_matrix = np.diag(np.sqrt(weights))
+        weights_matrix = np.diag(np.sqrt(sample_weight))
         if center_X:
-            X_mean = np.average(X, axis=0, weights=weights)
+            X_mean = np.average(X, axis=0, weights=sample_weight)
             X = X - X_mean
         if center_Y:
-            Y_mean = np.average(Y, axis=0, weights=weights)
+            Y_mean = np.average(Y, axis=0, weights=sample_weight)
             Y = Y - Y_mean
         if scale_X or scale_Y:
             num_nonzero_weights = np.asarray(
-                np.count_nonzero(weights), dtype=np.float64
+                np.count_nonzero(sample_weight), dtype=np.float64
             )
-            avg_non_zero_weights = np.sum(weights) / num_nonzero_weights
+            avg_non_zero_weights = np.sum(sample_weight) / num_nonzero_weights
             scale_dof = num_nonzero_weights - 1
         if scale_X:
-            new_X_mean = 0 if center_X else np.average(X, axis=0, weights=weights)
+            new_X_mean = 0 if center_X else np.average(X, axis=0, weights=sample_weight)
             X_std = np.sqrt(
                 np.sum(
-                    np.reshape(weights, (-1, 1)) * (X - new_X_mean) ** 2,
+                    np.reshape(sample_weight, (-1, 1)) * (X - new_X_mean) ** 2,
                     axis=0,
                     keepdims=True,
                 )
@@ -241,10 +601,10 @@ class TestClass:
             X_std[np.abs(X_std) <= np.finfo(np.float64).eps] = 1
             X = X / X_std
         if scale_Y:
-            new_Y_mean = 0 if center_Y else np.average(Y, axis=0, weights=weights)
+            new_Y_mean = 0 if center_Y else np.average(Y, axis=0, weights=sample_weight)
             Y_std = np.sqrt(
                 np.sum(
-                    np.reshape(weights, (-1, 1)) * (Y - new_Y_mean) ** 2,
+                    np.reshape(sample_weight, (-1, 1)) * (Y - new_Y_mean) ** 2,
                     axis=0,
                     keepdims=True,
                 )
@@ -330,7 +690,7 @@ class TestClass:
         scale_X: bool,
         scale_Y: bool,
         fast_cv: bool,
-        ddof=1,
+        ddof=0,
         float_bits: Literal[32, 64] = 64,
     ):
         """
@@ -481,11 +841,14 @@ class TestClass:
         center_Y: bool = True,
         scale_X: bool = True,
         scale_Y: bool = True,
-        weights: Optional[npt.NDArray] = None,
+        sample_weight: Optional[npt.NDArray] = None,
         return_sk_pls: Optional[bool] = True,
+        return_sklearn_pls: bool = False,
     ) -> Union[
         Tuple[SkPLS, npt.NDArray, NpPLS, NpPLS, JAX_Alg_1, JAX_Alg_2],
+        Tuple[SkPLS, npt.NDArray, NpPLS, NpPLS, JAX_Alg_1, JAX_Alg_2, SklearnPLS],
         Tuple[NpPLS, NpPLS, JAX_Alg_1, JAX_Alg_2],
+        Tuple[NpPLS, NpPLS, JAX_Alg_1, JAX_Alg_2, SklearnPLS],
     ]:
         """
         Description
@@ -504,7 +867,7 @@ class TestClass:
         n_components : int
             Number of PLS components.
 
-        weights : NDArray[float], optional
+        sample_weight : NDArray[float], optional
             Weights for the input data
 
         Returns
@@ -525,15 +888,37 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            # scikit-learn's PLSRegression scales with ddof=1; pin ddof=1 here to
+            # match it in the SkPLS comparison (the repo default is now ddof=0).
+            ddof=1,
             fast_cv=False,
         )
 
-        np_pls_alg_1.fit(X=X, Y=Y, A=n_components, weights=weights)
-        np_pls_alg_2.fit(X=X, Y=Y, A=n_components, weights=weights)
-        jax_pls_alg_1.fit(X=jnp_X, Y=jnp_Y, A=n_components, weights=weights)
-        jax_pls_alg_2.fit(X=jnp_X, Y=jnp_Y, A=n_components, weights=weights)
+        np_pls_alg_1.fit(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
+        np_pls_alg_2.fit(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
+        jax_pls_alg_1.fit(X=jnp_X, Y=jnp_Y, A=n_components, sample_weight=sample_weight)
+        jax_pls_alg_2.fit(X=jnp_X, Y=jnp_Y, A=n_components, sample_weight=sample_weight)
 
-        if weights is None and return_sk_pls:
+        # The scikit-learn-conformant wrapper (ikpls.sklearn.PLS). It takes
+        # n_components at construction and fits with the sklearn signature
+        # fit(X, y). algorithm=1 and ddof=1 so it is directly comparable to
+        # np_pls_alg_1 above and to scikit-learn's SkPLS (which scales with
+        # ddof=1). Only built for the unweighted case where SkPLS is built.
+        sklearn_pls = None
+        if sample_weight is None and return_sklearn_pls:
+            sklearn_pls = SklearnPLS(
+                n_components=n_components,
+                algorithm=1,
+                center_X=center_X,
+                center_Y=center_Y,
+                scale_X=scale_X,
+                scale_Y=scale_Y,
+                ddof=1,
+                dtype=np.float64,
+            )
+            sklearn_pls.fit(X, Y)
+
+        if sample_weight is None and return_sk_pls:
             if scale_X and scale_Y:
                 sk_pls = SkPLS(n_components=n_components, scale=True)
             else:
@@ -547,7 +932,7 @@ class TestClass:
                     sk_pls.y_loadings_[..., : i + 1].T,
                 )
                 sk_B[i] = sk_B_at_component_i
-            return (
+            result = (
                 sk_pls,
                 sk_B,
                 np_pls_alg_1,
@@ -555,18 +940,24 @@ class TestClass:
                 jax_pls_alg_1,
                 jax_pls_alg_2,
             )
-        return (
+            if return_sklearn_pls:
+                result = result + (sklearn_pls,)
+            return result
+        result = (
             np_pls_alg_1,
             np_pls_alg_2,
             jax_pls_alg_1,
             jax_pls_alg_2,
         )
+        if return_sklearn_pls and sample_weight is None:
+            result = result + (sklearn_pls,)
+        return result
 
     @staticmethod
     def jax_rmse_per_component(
         Y_true: jnp.ndarray,
         Y_pred: jnp.ndarray,
-        weights: Optional[jnp.ndarray] = None,
+        sample_weight: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
         Description
@@ -581,7 +972,7 @@ class TestClass:
         Y_pred : Array of shape (A, N, M)
             Predicted target values.
 
-        weights : Optional[Array of shape (N,)]
+        sample_weight : Optional[Array of shape (N,)]
             Weights for the true target values. If None, all samples are equally
             weighted.
 
@@ -594,9 +985,9 @@ class TestClass:
             Y_true = Y_true.reshape(-1, 1)
         e = Y_true - Y_pred
         se = e**2
-        if weights is not None:
-            weights = weights.flatten()
-        mse = jnp.average(se, axis=-2, weights=weights)
+        if sample_weight is not None:
+            sample_weight = sample_weight.flatten()
+        mse = jnp.average(se, axis=-2, weights=sample_weight)
         rmse = jnp.sqrt(mse)
         return rmse
 
@@ -604,7 +995,7 @@ class TestClass:
     def rmse_per_component(
         Y_true: npt.NDArray,
         Y_pred: npt.NDArray,
-        weights: Optional[npt.NDArray] = None,
+        sample_weight: Optional[npt.NDArray] = None,
     ) -> npt.NDArray:
         """
         Description
@@ -619,7 +1010,7 @@ class TestClass:
         Y_pred : Array of shape (A, N, M)
             Predicted target values.
 
-        weights : Optional[Array of shape (N,)]
+        sample_weight : Optional[Array of shape (N,)]
             Weights for the true target values. If None, all samples are equally
             weighted.
 
@@ -632,9 +1023,9 @@ class TestClass:
             Y_true = Y_true.reshape(-1, 1)
         e = Y_true - Y_pred
         se = e**2
-        if weights is not None:
-            weights = weights.flatten()
-        mse = np.average(se, axis=-2, weights=weights)
+        if sample_weight is not None:
+            sample_weight = sample_weight.flatten()
+        mse = np.average(se, axis=-2, weights=sample_weight)
         rmse = np.sqrt(mse)
         return rmse
 
@@ -1309,6 +1700,26 @@ class TestClass:
             rtol=rtol,
         )
 
+        # Y weights (C). In Improved Kernel PLS the Y-weights equal the Y-loadings Q
+        # (scikit-learn's PLSRegression convention), so C must equal Q for every
+        # implementation and match across CPU/GPU just as Q does.
+        assert_array_equal(np.asarray(np_pls_alg_1.C), np.asarray(np_pls_alg_1.Q))
+        assert_array_equal(np.asarray(np_pls_alg_2.C), np.asarray(np_pls_alg_2.Q))
+        assert_array_equal(np.asarray(jax_pls_alg_1.C), np.asarray(jax_pls_alg_1.Q))
+        assert_array_equal(np.asarray(jax_pls_alg_2.C), np.asarray(jax_pls_alg_2.Q))
+        assert_allclose(
+            np.abs(np.asarray(np_pls_alg_1.C)[..., :n_good_components]),
+            np.abs(np.asarray(jax_pls_alg_1.C)[..., :n_good_components]),
+            atol=atol,
+            rtol=rtol,
+        )
+        assert_allclose(
+            np.abs(np.asarray(np_pls_alg_2.C)[..., :n_good_components]),
+            np.abs(np.asarray(jax_pls_alg_2.C)[..., :n_good_components]),
+            atol=atol,
+            rtol=rtol,
+        )
+
         # X rotations
         assert_allclose(
             np.abs(np_pls_alg_1.R[..., :n_good_components]),
@@ -1740,6 +2151,140 @@ class TestClass:
             rtol=0,
         )  # PLS2 is not as numerically stable as PLS1.
 
+    def check_attributes_vs_sklearn(
+        self,
+        X,
+        sk_pls,
+        np_pls_alg_1,
+        np_pls_alg_2,
+        jax_pls_alg_1,
+        jax_pls_alg_2,
+        sklearn_pls,
+        n_components,
+        atol,
+        rtol,
+        map_atol=1e-9,
+        map_rtol=1e-7,
+    ):
+        """
+        Assert that every ikpls implementation's fitted attributes match those of
+        scikit-learn's NIPALS ``PLSRegression`` (``sk_pls``).
+
+        scikit-learn's ``PLSRegression`` always centers X and Y and, with
+        ``scale=True``, scales both with ``ddof=1``; the ikpls models here are fit
+        to match (``center_X=center_Y=True`` and ``ddof=1`` via ``fit_models``).
+
+        Weights, loadings and rotations are defined only up to a per-component
+        sign, so they are compared with ``np.abs``. The regression map
+        (``coef_`` / ``intercept_``, and hence the predictions) is unique, so it
+        is compared directly. The NumPy and JAX native classes expose the same
+        quantities under single-letter names (``W`` = x-weights, ``P`` =
+        x-loadings, ``Q`` = y-loadings, ``R`` = x-rotations, ``R_Y[A]`` =
+        y-rotations, ``C`` = y-weights); they are checked alongside the
+        ``ikpls.sklearn.PLS`` wrapper.
+        """
+        A = n_components
+
+        def _a(x):
+            return np.abs(np.asarray(x))
+
+        # (scikit-learn attribute, the same quantity from each ikpls model)
+        sign_free = [
+            (
+                sk_pls.x_weights_,
+                [
+                    np_pls_alg_1.W,
+                    np_pls_alg_2.W,
+                    jax_pls_alg_1.W,
+                    jax_pls_alg_2.W,
+                    sklearn_pls.x_weights_,
+                ],
+            ),
+            (
+                sk_pls.x_loadings_,
+                [
+                    np_pls_alg_1.P,
+                    np_pls_alg_2.P,
+                    jax_pls_alg_1.P,
+                    jax_pls_alg_2.P,
+                    sklearn_pls.x_loadings_,
+                ],
+            ),
+            (
+                sk_pls.y_loadings_,
+                [
+                    np_pls_alg_1.Q,
+                    np_pls_alg_2.Q,
+                    jax_pls_alg_1.Q,
+                    jax_pls_alg_2.Q,
+                    sklearn_pls.y_loadings_,
+                ],
+            ),
+            (
+                sk_pls.y_weights_,
+                [
+                    np_pls_alg_1.C,
+                    np_pls_alg_2.C,
+                    jax_pls_alg_1.C,
+                    jax_pls_alg_2.C,
+                    sklearn_pls.y_weights_,
+                ],
+            ),
+            (
+                sk_pls.x_rotations_,
+                [
+                    np_pls_alg_1.R,
+                    np_pls_alg_2.R,
+                    jax_pls_alg_1.R,
+                    jax_pls_alg_2.R,
+                    sklearn_pls.x_rotations_,
+                ],
+            ),
+            (
+                sk_pls.y_rotations_,
+                [
+                    np_pls_alg_1.R_Y[A],
+                    np_pls_alg_2.R_Y[A],
+                    jax_pls_alg_1.R_Y[A],
+                    jax_pls_alg_2.R_Y[A],
+                    sklearn_pls.y_rotations_,
+                ],
+            ),
+        ]
+        for sk_attr, ikpls_attrs in sign_free:
+            for attr in ikpls_attrs:
+                assert_allclose(_a(attr), _a(sk_attr), atol=atol, rtol=rtol)
+
+        # The wrapper follows scikit-learn's PLSRegression convention exactly:
+        # coef_ and intercept_ (the Y-mean) match sk_pls directly. (Both predict by
+        # effectively centering X, so this affine map is compared as-is.) Unlike the
+        # sign-ambiguous weights/loadings/rotations above -- which differ at the
+        # NIPALS-vs-Kernel-PLS iterative level -- the regression map is uniquely
+        # determined and agrees to near machine precision, so it is checked at a
+        # much tighter tolerance (map_atol/map_rtol) that a real coef_/prediction
+        # regression could not slip through.
+        assert_allclose(sklearn_pls.coef_, sk_pls.coef_, atol=map_atol, rtol=map_rtol)
+        M = np.asarray(sk_pls.coef_).shape[0]
+        assert_allclose(
+            np.asarray(sklearn_pls.intercept_).reshape(M),
+            np.asarray(sk_pls.intercept_).reshape(M),
+            atol=map_atol,
+            rtol=map_rtol,
+        )
+        # Every implementation's A-component predictions must match scikit-learn's.
+        sk_pred = np.asarray(sk_pls.predict(X)).reshape(X.shape[0], M)
+        ikpls_preds = [
+            np.asarray(np_pls_alg_1.predict(X, n_components=A)),
+            np.asarray(np_pls_alg_2.predict(X, n_components=A)),
+            np.asarray(jax_pls_alg_1.predict(X, n_components=A)),
+            np.asarray(jax_pls_alg_2.predict(X, n_components=A)),
+            np.asarray(sklearn_pls.predict(X)),
+        ]
+        for pred in ikpls_preds:
+            assert_allclose(
+                pred.reshape(X.shape[0], M), sk_pred, atol=map_atol, rtol=map_rtol
+            )
+
     def test_sanity_check_pls_regression(self) -> None:
         """
         Description
@@ -1772,7 +2317,10 @@ class TestClass:
             np_pls_alg_2,
             jax_pls_alg_1,
             jax_pls_alg_2,
-        ) = self.fit_models(X=X, Y=Y, n_components=n_components)
+            sklearn_pls,
+        ) = self.fit_models(
+            X=X, Y=Y, n_components=n_components, return_sklearn_pls=True
+        )
 
         self.check_cpu_gpu_equality(
             np_pls_alg_1=np_pls_alg_1,
@@ -1826,6 +2374,11 @@ class TestClass:
             ]
         )
 
+        # In scikit-learn's PLSRegression (and Improved Kernel PLS) the Y-weights
+        # equal the Y-loadings, so the expected Y-weights are the same array. Our
+        # ``C`` (== ``Q``) reproduces them, matching sklearn's ``y_weights_``.
+        expected_y_weights = expected_y_loadings
+
         # Check for expected X weights
         assert_allclose(
             np.abs(sk_pls.x_weights_), np.abs(expected_x_weights), atol=1e-8, rtol=0
@@ -1877,38 +2430,77 @@ class TestClass:
             np.abs(jax_pls_alg_2.Q), np.abs(expected_y_loadings), atol=2e-6, rtol=0
         )
 
+        # Check for expected Y weights (C). sklearn's PLSRegression exposes
+        # y_weights_ == y_loadings_; our C (== Q) matches both.
+        assert_allclose(
+            np.abs(sk_pls.y_weights_), np.abs(expected_y_weights), atol=1e-8, rtol=0
+        )
+        assert_allclose(
+            np.abs(np_pls_alg_1.C), np.abs(expected_y_weights), atol=2e-6, rtol=0
+        )
+        assert_allclose(
+            np.abs(np_pls_alg_2.C), np.abs(expected_y_weights), atol=2e-6, rtol=0
+        )
+        assert_allclose(
+            np.abs(np.asarray(jax_pls_alg_1.C)),
+            np.abs(expected_y_weights),
+            atol=2e-6,
+            rtol=0,
+        )
+        assert_allclose(
+            np.abs(np.asarray(jax_pls_alg_2.C)),
+            np.abs(expected_y_weights),
+            atol=2e-6,
+            rtol=0,
+        )
+
         # Check that sign flip is consistent and exact across loadings and weights
         sk_x_loadings_sign_flip = np.sign(sk_pls.x_loadings_ / expected_x_loadings)
         sk_x_weights_sign_flip = np.sign(sk_pls.x_weights_ / expected_x_weights)
         sk_y_loadings_sign_flip = np.sign(sk_pls.y_loadings_ / expected_y_loadings)
+        sk_y_weights_sign_flip = np.sign(sk_pls.y_weights_ / expected_y_weights)
         assert_allclose(sk_x_loadings_sign_flip, sk_x_weights_sign_flip, atol=0, rtol=0)
         assert_allclose(
             sk_x_loadings_sign_flip, sk_y_loadings_sign_flip, atol=0, rtol=0
+        )
+        assert_allclose(
+            sk_y_loadings_sign_flip, sk_y_weights_sign_flip, atol=0, rtol=0
         )
 
         np_alg_1_x_loadings_sign_flip = np.sign(np_pls_alg_1.P / expected_x_loadings)
         np_alg_1_x_weights_sign_flip = np.sign(np_pls_alg_1.W / expected_x_weights)
         np_alg_1_y_loadings_sign_flip = np.sign(np_pls_alg_1.Q / expected_y_loadings)
+        np_alg_1_y_weights_sign_flip = np.sign(np_pls_alg_1.C / expected_y_weights)
         assert_allclose(
             np_alg_1_x_loadings_sign_flip, np_alg_1_x_weights_sign_flip, atol=0, rtol=0
         )
         assert_allclose(
             np_alg_1_x_loadings_sign_flip, np_alg_1_y_loadings_sign_flip, atol=0, rtol=0
         )
+        assert_allclose(
+            np_alg_1_y_loadings_sign_flip, np_alg_1_y_weights_sign_flip, atol=0, rtol=0
+        )
 
         np_alg_2_x_loadings_sign_flip = np.sign(np_pls_alg_2.P / expected_x_loadings)
         np_alg_2_x_weights_sign_flip = np.sign(np_pls_alg_2.W / expected_x_weights)
         np_alg_2_y_loadings_sign_flip = np.sign(np_pls_alg_2.Q / expected_y_loadings)
+        np_alg_2_y_weights_sign_flip = np.sign(np_pls_alg_2.C / expected_y_weights)
         assert_allclose(
             np_alg_2_x_loadings_sign_flip, np_alg_2_x_weights_sign_flip, atol=0, rtol=0
         )
         assert_allclose(
             np_alg_2_x_loadings_sign_flip, np_alg_2_y_loadings_sign_flip, atol=0, rtol=0
         )
+        assert_allclose(
+            np_alg_2_y_loadings_sign_flip, np_alg_2_y_weights_sign_flip, atol=0, rtol=0
+        )
 
         jax_alg_1_x_loadings_sign_flip = np.sign(jax_pls_alg_1.P / expected_x_loadings)
         jax_alg_1_x_weights_sign_flip = np.sign(jax_pls_alg_1.W / expected_x_weights)
         jax_alg_1_y_loadings_sign_flip = np.sign(jax_pls_alg_1.Q / expected_y_loadings)
+        jax_alg_1_y_weights_sign_flip = np.sign(
+            np.asarray(jax_pls_alg_1.C) / expected_y_weights
+        )
         assert_allclose(
             jax_alg_1_x_loadings_sign_flip,
             jax_alg_1_x_weights_sign_flip,
@@ -1921,10 +2513,19 @@ class TestClass:
             atol=0,
             rtol=0,
         )
+        assert_allclose(
+            jax_alg_1_y_loadings_sign_flip,
+            jax_alg_1_y_weights_sign_flip,
+            atol=0,
+            rtol=0,
+        )
 
         jax_alg_2_x_loadings_sign_flip = np.sign(jax_pls_alg_2.P / expected_x_loadings)
         jax_alg_2_x_weights_sign_flip = np.sign(jax_pls_alg_2.W / expected_x_weights)
         jax_alg_2_y_loadings_sign_flip = np.sign(jax_pls_alg_2.Q / expected_y_loadings)
+        jax_alg_2_y_weights_sign_flip = np.sign(
+            np.asarray(jax_pls_alg_2.C) / expected_y_weights
+        )
         assert_allclose(
             jax_alg_2_x_loadings_sign_flip,
             jax_alg_2_x_weights_sign_flip,
@@ -1936,6 +2537,28 @@ class TestClass:
             jax_alg_2_y_loadings_sign_flip,
             atol=0,
             rtol=0,
+        )
+        assert_allclose(
+            jax_alg_2_y_loadings_sign_flip,
+            jax_alg_2_y_weights_sign_flip,
+            atol=0,
+            rtol=0,
+        )
+
+        # Compare weights/loadings/rotations/coef/intercept and predictions of the
+        # NumPy, JAX and scikit-learn-wrapper implementations against scikit-learn's
+        # NIPALS PLSRegression fitted on the same data.
+        self.check_attributes_vs_sklearn(
+            X,
+            sk_pls,
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            sklearn_pls,
+            n_components,
+            atol=1e-5,
+            rtol=1e-5,
         )
 
     def test_sanity_check_pls_regression_constant_column_Y(
@@ -1978,7 +2601,10 @@ class TestClass:
             np_pls_alg_2,
             jax_pls_alg_1,
             jax_pls_alg_2,
-        ) = self.fit_models(X=X, Y=Y, n_components=n_components)
+            sklearn_pls,
+        ) = self.fit_models(
+            X=X, Y=Y, n_components=n_components, return_sklearn_pls=True
+        )
 
         self.check_cpu_gpu_equality(
             np_pls_alg_1=np_pls_alg_1,
@@ -2062,6 +2688,31 @@ class TestClass:
             np.abs(jax_pls_alg_2.Q), np.abs(expected_y_loadings), atol=3e-6, rtol=0
         )
 
+        # Check for expected Y weights (C == Q; sklearn y_weights_ == y_loadings_).
+        # The constant Y column yields an all-zero first weight column, as for Q.
+        expected_y_weights = expected_y_loadings
+        assert_allclose(
+            np.abs(sk_pls.y_weights_), np.abs(expected_y_weights), atol=5e-8, rtol=0
+        )
+        assert_allclose(
+            np.abs(np_pls_alg_1.C), np.abs(expected_y_weights), atol=3e-6, rtol=0
+        )
+        assert_allclose(
+            np.abs(np_pls_alg_2.C), np.abs(expected_y_weights), atol=3e-6, rtol=0
+        )
+        assert_allclose(
+            np.abs(np.asarray(jax_pls_alg_1.C)),
+            np.abs(expected_y_weights),
+            atol=3e-6,
+            rtol=0,
+        )
+        assert_allclose(
+            np.abs(np.asarray(jax_pls_alg_2.C)),
+            np.abs(expected_y_weights),
+            atol=3e-6,
+            rtol=0,
+        )
+
         # Check for orthogonal X weights.
         self.assert_matrix_orthogonal(sk_pls.x_weights_, atol=1e-8, rtol=0)
         self.assert_matrix_orthogonal(np_pls_alg_1.W, atol=1e-8, rtol=0)
@@ -2082,15 +2733,24 @@ class TestClass:
         sk_y_loadings_sign_flip = np.sign(
             sk_pls.y_loadings_[1:] / expected_y_loadings[1:]
         )
+        sk_y_weights_sign_flip = np.sign(
+            sk_pls.y_weights_[1:] / expected_y_weights[1:]
+        )
         assert_allclose(sk_x_loadings_sign_flip, sk_x_weights_sign_flip, atol=0, rtol=0)
         assert_allclose(
             sk_x_loadings_sign_flip[1:], sk_y_loadings_sign_flip, atol=0, rtol=0
+        )
+        assert_allclose(
+            sk_y_loadings_sign_flip, sk_y_weights_sign_flip, atol=0, rtol=0
         )
 
         np_alg_1_x_loadings_sign_flip = np.sign(np_pls_alg_1.P / expected_x_loadings)
         np_alg_1_x_weights_sign_flip = np.sign(np_pls_alg_1.W / expected_x_weights)
         np_alg_1_y_loadings_sign_flip = np.sign(
             np_pls_alg_1.Q[1:] / expected_y_loadings[1:]
+        )
+        np_alg_1_y_weights_sign_flip = np.sign(
+            np_pls_alg_1.C[1:] / expected_y_weights[1:]
         )
         assert_allclose(
             np_alg_1_x_loadings_sign_flip, np_alg_1_x_weights_sign_flip, atol=0, rtol=0
@@ -2101,11 +2761,20 @@ class TestClass:
             atol=0,
             rtol=0,
         )
+        assert_allclose(
+            np_alg_1_y_loadings_sign_flip,
+            np_alg_1_y_weights_sign_flip,
+            atol=0,
+            rtol=0,
+        )
 
         np_alg_2_x_loadings_sign_flip = np.sign(np_pls_alg_2.P / expected_x_loadings)
         np_alg_2_x_weights_sign_flip = np.sign(np_pls_alg_2.W / expected_x_weights)
         np_alg_2_y_loadings_sign_flip = np.sign(
             np_pls_alg_2.Q[1:] / expected_y_loadings[1:]
+        )
+        np_alg_2_y_weights_sign_flip = np.sign(
+            np_pls_alg_2.C[1:] / expected_y_weights[1:]
         )
         assert_allclose(
             np_alg_2_x_loadings_sign_flip, np_alg_2_x_weights_sign_flip, atol=0, rtol=0
@@ -2116,11 +2785,20 @@ class TestClass:
             atol=0,
             rtol=0,
         )
+        assert_allclose(
+            np_alg_2_y_loadings_sign_flip,
+            np_alg_2_y_weights_sign_flip,
+            atol=0,
+            rtol=0,
+        )
 
         jax_alg_1_x_loadings_sign_flip = np.sign(jax_pls_alg_1.P / expected_x_loadings)
         jax_alg_1_x_weights_sign_flip = np.sign(jax_pls_alg_1.W / expected_x_weights)
         jax_alg_1_y_loadings_sign_flip = np.sign(
             jax_pls_alg_1.Q[1:] / expected_y_loadings[1:]
+        )
+        jax_alg_1_y_weights_sign_flip = np.sign(
+            np.asarray(jax_pls_alg_1.C)[1:] / expected_y_weights[1:]
         )
         assert_allclose(
             jax_alg_1_x_loadings_sign_flip,
@@ -2134,11 +2812,20 @@ class TestClass:
             atol=0,
             rtol=0,
         )
+        assert_allclose(
+            jax_alg_1_y_loadings_sign_flip,
+            jax_alg_1_y_weights_sign_flip,
+            atol=0,
+            rtol=0,
+        )
 
         jax_alg_2_x_loadings_sign_flip = np.sign(jax_pls_alg_2.P / expected_x_loadings)
         jax_alg_2_x_weights_sign_flip = np.sign(jax_pls_alg_2.W / expected_x_weights)
         jax_alg_2_y_loadings_sign_flip = np.sign(
             jax_pls_alg_2.Q[1:] / expected_y_loadings[1:]
+        )
+        jax_alg_2_y_weights_sign_flip = np.sign(
+            np.asarray(jax_pls_alg_2.C)[1:] / expected_y_weights[1:]
         )
         assert_allclose(
             jax_alg_2_x_loadings_sign_flip,
@@ -2151,6 +2838,33 @@ class TestClass:
             jax_alg_2_y_loadings_sign_flip,
             atol=0,
             rtol=0,
+        )
+        assert_allclose(
+            jax_alg_2_y_loadings_sign_flip,
+            jax_alg_2_y_weights_sign_flip,
+            atol=0,
+            rtol=0,
+        )
+
+        # Compare weights/loadings/rotations/coef/intercept and predictions of the
+        # NumPy, JAX and scikit-learn-wrapper implementations against scikit-learn's
+        # NIPALS PLSRegression fitted on the same data.
+        # Looser sign-free tolerance than the regular sanity check: the constant Y
+        # column makes the Y-rotations a pseudo-inverse of a rank-deficient matrix,
+        # so IKPLS and scikit-learn's NIPALS differ by ~2e-5 there (weights/loadings/
+        # rotations only). coef_/intercept_/predictions still use the tight default
+        # map tolerance below, as they remain unique and agree near machine epsilon.
+        self.check_attributes_vs_sklearn(
+            X,
+            sk_pls,
+            np_pls_alg_1,
+            np_pls_alg_2,
+            jax_pls_alg_1,
+            jax_pls_alg_2,
+            sklearn_pls,
+            n_components,
+            atol=1e-4,
+            rtol=1e-4,
         )
 
     def _helper_check_pls_constant_y(
@@ -2768,8 +3482,10 @@ class TestClass:
         n_components = X.shape[1]
 
         sk_pls = SkPLS(n_components=n_components)
-        jax_pls_alg_1 = JAX_Alg_1(verbose=True)
-        jax_pls_alg_2 = JAX_Alg_2(verbose=True)
+        # scikit-learn's PLSRegression scales with ddof=1; the repo default is now
+        # ddof=0, so pin ddof=1 on the ikpls models compared against SkPLS here.
+        jax_pls_alg_1 = JAX_Alg_1(verbose=True, ddof=1)
+        jax_pls_alg_2 = JAX_Alg_2(verbose=True, ddof=1)
 
         jnp_splits = jnp.array(splits)
 
@@ -2814,9 +3530,36 @@ class TestClass:
             val_rmses = self.rmse_per_component(Y_true, Y_pred)
             sk_pls_rmses[i] = val_rmses
 
-        # Calibrate NumPy PLS
-        np_pls_alg_1 = NpPLS(algorithm=1)
-        np_pls_alg_2 = NpPLS(algorithm=2)
+        # Calibrate the scikit-learn-conformant wrapper the SAME way as SkPLS: drive
+        # it through scikit-learn's cross_validate, then per fold obtain predictions
+        # at every number of components via predict_all_components (the (A, N, M)
+        # escape hatch) and compute RMSE-per-component. ddof=1 to match SkPLS;
+        # center/scale default True, matching SkPLS's always-center + scale=True.
+        sklearn_pls = SklearnPLS(n_components=n_components, algorithm=1, ddof=1)
+        sklearn_results = cross_validate(
+            sklearn_pls,
+            X,
+            Y,
+            cv=self.cv_splitter(splits),
+            return_estimator=True,
+            n_jobs=-1,
+        )
+        sklearn_models = sklearn_results["estimator"]
+        sklearn_preds = np.empty((len(sklearn_models), n_components, X.shape[0], M))
+        for i, sklearn_model in enumerate(sklearn_models):
+            sklearn_preds[i] = np.asarray(
+                sklearn_model.predict_all_components(X)
+            ).reshape(n_components, X.shape[0], M)
+        sklearn_pls_rmses = np.empty((len(sklearn_models), n_components, M))
+        for i in range(len(sklearn_models)):
+            val_idxs = np.nonzero(splits == i)[0]
+            Y_true = Y[val_idxs]
+            Y_pred = sklearn_preds[i, :, val_idxs, ...].swapaxes(0, 1)
+            sklearn_pls_rmses[i] = self.rmse_per_component(Y_true, Y_pred)
+
+        # Calibrate NumPy PLS (ddof=1 to match SkPLS; repo default is now ddof=0)
+        np_pls_alg_1 = NpPLS(algorithm=1, ddof=1)
+        np_pls_alg_2 = NpPLS(algorithm=2, ddof=1)
         np_pls_alg_1_rmses = np_pls_alg_1.cross_validate(
             X, Y, n_components, splits.flatten(), self.rmse_per_component
         )
@@ -2824,11 +3567,11 @@ class TestClass:
             X, Y, n_components, splits.flatten(), self.rmse_per_component
         )
 
-        # Calibrate FastCV NumPy PLS
-        fast_cv_np_pls_alg_1 = FastCVPLS(algorithm=1)
-        fast_cv_np_pls_alg_2 = FastCVPLS(algorithm=2)
-        jax_fast_cv_pls_alg_1 = JaxFastCVPLS(algorithm=1)
-        jax_fast_cv_pls_alg_2 = JaxFastCVPLS(algorithm=2)
+        # Calibrate FastCV NumPy PLS (ddof=1 to match SkPLS; repo default now ddof=0)
+        fast_cv_np_pls_alg_1 = FastCVPLS(algorithm=1, ddof=1)
+        fast_cv_np_pls_alg_2 = FastCVPLS(algorithm=2, ddof=1)
+        jax_fast_cv_pls_alg_1 = JaxFastCVPLS(algorithm=1, ddof=1)
+        jax_fast_cv_pls_alg_2 = JaxFastCVPLS(algorithm=2, ddof=1)
         fast_cv_np_pls_alg_1_results = fast_cv_np_pls_alg_1.cross_validate(
             X, Y, n_components, splits.flatten(), self.rmse_per_component
         )
@@ -2912,6 +3655,10 @@ class TestClass:
             [np.argmin(sk_pls_rmses[split][..., i]) for split in unique_splits]
             for i in range(M)
         ]
+        sklearn_pls_best_num_components = [
+            [np.argmin(sklearn_pls_rmses[split][..., i]) for split in unique_splits]
+            for i in range(M)
+        ]
         np_pls_alg_1_best_num_components = [
             [np.argmin(np_pls_alg_1_rmses[split][..., i]) for split in unique_splits]
             for i in range(M)
@@ -2967,6 +3714,13 @@ class TestClass:
         sk_best_rmses = [
             [
                 sk_pls_rmses[split][sk_best_num_components[i][split], i]
+                for split in unique_splits
+            ]
+            for i in range(M)
+        ]
+        sklearn_pls_best_rmses = [
+            [
+                sklearn_pls_rmses[split][sklearn_pls_best_num_components[i][split], i]
                 for split in unique_splits
             ]
             for i in range(M)
@@ -3040,6 +3794,7 @@ class TestClass:
             for i in range(M)
         ]
 
+        assert_allclose(sklearn_pls_best_rmses, sk_best_rmses, atol=atol, rtol=rtol)
         assert_allclose(np_pls_alg_1_best_rmses, sk_best_rmses, atol=atol, rtol=rtol)
         assert_allclose(np_pls_alg_2_best_rmses, sk_best_rmses, atol=atol, rtol=rtol)
         assert_allclose(
@@ -3628,7 +4383,7 @@ class TestClass:
         " multithreaded, so this will likely lead to a"
         " deadlock.",
     )
-    def check_center_scale_combinations(self, X, Y, weights, splits, atol, rtol):
+    def check_center_scale_combinations(self, X, Y, sample_weight, splits, atol, rtol):
         """
         Description
         -----------
@@ -3734,7 +4489,7 @@ class TestClass:
             )
 
             if use_w:
-                cur_weights = weights
+                cur_weights = sample_weight
             else:
                 cur_weights = None
 
@@ -3744,7 +4499,7 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.rmse_per_component,
-                weights=cur_weights,
+                sample_weight=cur_weights,
                 n_jobs=2,
             )
             np_pls_alg_2_results = np_pls_alg_2.cross_validate(
@@ -3753,7 +4508,7 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.rmse_per_component,
-                weights=cur_weights,
+                sample_weight=cur_weights,
                 n_jobs=2,
             )
 
@@ -3765,7 +4520,7 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.rmse_per_component,
-                weights=cur_weights,
+                sample_weight=cur_weights,
                 n_jobs=2,
                 verbose=0,
             )
@@ -3775,7 +4530,7 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.rmse_per_component,
-                weights=cur_weights,
+                sample_weight=cur_weights,
                 n_jobs=2,
                 verbose=0,
             )
@@ -3803,7 +4558,7 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.jax_rmse_per_component,
-                weights=cur_weights,
+                sample_weight=cur_weights,
                 show_progress=False,
             )
             jax_fast_cv_pls_alg_2_results = jax_fast_cv_pls_alg_2.cross_validate(
@@ -3812,7 +4567,7 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.jax_rmse_per_component,
-                weights=cur_weights,
+                sample_weight=cur_weights,
                 show_progress=False,
             )
             jax_fast_cv_pls_alg_1_results = [
@@ -3836,7 +4591,7 @@ class TestClass:
                 folds=jnp_splits,
                 metric_function=self.jax_rmse_per_component,
                 metric_names=["RMSE"],
-                weights=cur_weights,
+                sample_weight=cur_weights,
             )
             jax_pls_alg_2_results = jax_pls_alg_2.cross_validate(
                 X=X,
@@ -3845,7 +4600,7 @@ class TestClass:
                 folds=jnp_splits,
                 metric_function=self.jax_rmse_per_component,
                 metric_names=["RMSE"],
-                weights=cur_weights,
+                sample_weight=cur_weights,
             )
 
             # Get the best number of components in terms of minimizing validation RMSE
@@ -3981,7 +4736,7 @@ class TestClass:
             ]
 
             err_msg = (
-                f"Use weights: {use_w}, Ddof: {ddof}, Center_X: {center_X}, "
+                f"Use sample_weight: {use_w}, Ddof: {ddof}, Center_X: {center_X}, "
                 f"Center_Y: {center_Y}, Scale_X: {scale_X}, Scale_Y: {scale_Y}"
             )
             assert_allclose(
@@ -4061,17 +4816,17 @@ class TestClass:
         X = self.load_X()
         X = X[..., :3]  # Decrease the amount of features in the interest of time.
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
-        weights = weights[::50]
+        sample_weight = sample_weight[::50]
         splits = splits[::50]
         assert Y.shape[1] == 1
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-8)
+        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-8)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4099,18 +4854,18 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         step_size_row = 1000
         X = X[::step_size_row]
         Y = Y[::step_size_row]
-        weights = weights[::step_size_row]
+        sample_weight = sample_weight[::step_size_row]
         splits = splits[::step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-7)
+        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-7)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4138,7 +4893,7 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
@@ -4151,11 +4906,11 @@ class TestClass:
             : step_size_col * min_x_dim : step_size_col,
         ]
         Y = Y[: step_size_row * min_x_dim : step_size_row]
-        weights = weights[: step_size_row * min_x_dim : step_size_row]
+        sample_weight = sample_weight[: step_size_row * min_x_dim : step_size_row]
         splits = splits[: step_size_row * min_x_dim : step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-6)
+        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-6)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4189,18 +4944,18 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
-        weights = weights[::50]
+        sample_weight = sample_weight[::50]
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-7)
+        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-7)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4234,18 +4989,18 @@ class TestClass:
             ]
         )
         X = X[..., :2]
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
-        weights = weights[::50]
+        sample_weight = sample_weight[::50]
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=3e-8)
+        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=3e-8)
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4281,18 +5036,18 @@ class TestClass:
             ]
         )
         X = X[..., :3]
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = (
             self.load_Y(["split"]).flatten().astype(np.int64)
         )  # Contains 3 splits of different sizes
         # Decrease the amount of samples in the interest of time.
         X = X[::50]
         Y = Y[::50]
-        weights = weights[::50]
+        sample_weight = sample_weight[::50]
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
-        self.check_center_scale_combinations(X, Y, weights, splits, atol=0, rtol=1e-8)
+        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-8)
 
     def check_wpls_max_components_eq_to_wls(
         self,
@@ -4377,7 +5132,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=weights_one,
+                sample_weight=weights_one,
             )
             weights_point_five_pls_models = self.fit_models(
                 X=X,
@@ -4387,7 +5142,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=weights_point_five,
+                sample_weight=weights_point_five,
             )
             no_weights_pls_models = self.fit_models(
                 X=X,
@@ -4397,7 +5152,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=None,
+                sample_weight=None,
                 return_sk_pls=False,
             )
             weights_one_preds, weights_one_Bs = self.get_model_preds(
@@ -4412,7 +5167,7 @@ class TestClass:
             weights_one_wls_pred, weights_one_wls_B = self.fit_predict_wls(
                 X=X,
                 Y=Y,
-                weights=weights_one,
+                sample_weight=weights_one,
                 center_X=center_X,
                 center_Y=center_Y,
                 scale_X=scale_X,
@@ -4422,7 +5177,7 @@ class TestClass:
                 self.fit_predict_wls(
                     X=X,
                     Y=Y,
-                    weights=weights_point_five,
+                    sample_weight=weights_point_five,
                     center_X=center_X,
                     center_Y=center_Y,
                     scale_X=scale_X,
@@ -4507,7 +5262,7 @@ class TestClass:
         self,
         X,
         Y,
-        weights,
+        sample_weight,
         pred_atol,
         pred_rtol,
         B_atol,
@@ -4523,12 +5278,12 @@ class TestClass:
         scale_Ys = [False, True]
         center_scale_combinations = product(center_Xs, center_Ys, scale_Xs, scale_Ys)
         # Set every 10th weight to zero
-        weights_zero = weights.copy()
+        weights_zero = sample_weight.copy()
         weights_zero[::10] = 0
 
         reduced_X = X[weights_zero != 0]
         reduced_Y = Y[weights_zero != 0]
-        reduced_weights = weights[weights_zero != 0]
+        reduced_weights = sample_weight[weights_zero != 0]
         n_components = min(X.shape[0], X.shape[1])
         for center_X, center_Y, scale_X, scale_Y in center_scale_combinations:
             pls_models_reduced_input = self.fit_models(
@@ -4539,7 +5294,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=reduced_weights,
+                sample_weight=reduced_weights,
             )
             pls_preds_reduced_input, pls_Bs_reduced_input = self.get_model_preds(
                 X, pls_models_reduced_input
@@ -4552,7 +5307,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=weights_zero,
+                sample_weight=weights_zero,
             )
             pls_preds, pls_Bs = self.get_model_preds(X, pls_models)
 
@@ -4588,7 +5343,7 @@ class TestClass:
             wls_pred, wls_B = self.fit_predict_wls(
                 X=X,
                 Y=Y,
-                weights=weights_zero,
+                sample_weight=weights_zero,
                 center_X=center_X,
                 center_Y=center_Y,
                 scale_X=scale_X,
@@ -4852,7 +5607,7 @@ class TestClass:
         )
 
     def check_weighted_cross_val_with_preprocessing(
-        self, X, Y, weights, splits, atol, rtol
+        self, X, Y, sample_weight, splits, atol, rtol
     ):
         center_Xs = [False, True]
         center_Ys = [False, True]
@@ -4888,7 +5643,7 @@ class TestClass:
                         preprocessing_function=self.jax_snv,
                         metric_function=self.jax_rmse_per_component,
                         metric_names=["RMSE"],
-                        weights=weights,
+                        sample_weight=sample_weight,
                     )
                     cv_rmses_per_component = [
                         results["RMSE"][split] for split in unique_splits
@@ -4901,7 +5656,7 @@ class TestClass:
                         folds=splits,
                         preprocessing_function=self.snv,
                         metric_function=self.rmse_per_component,
-                        weights=weights,
+                        sample_weight=sample_weight,
                         n_jobs=2,
                     )
                     cv_rmses_per_component = [results[split] for split in unique_splits]
@@ -4917,7 +5672,7 @@ class TestClass:
                         A=n_components,
                         folds=splits,
                         metric_function=self.rmse_per_component,
-                        weights=weights,
+                        sample_weight=sample_weight,
                         n_jobs=-2,
                     )
                     cv_rmses_per_component = [results[split] for split in unique_splits]
@@ -4936,7 +5691,7 @@ class TestClass:
                         A=n_components,
                         folds=splits,
                         metric_function=self.jax_rmse_per_component,
-                        weights=weights,
+                        sample_weight=sample_weight,
                         show_progress=False,
                     )
                     cv_rmses_per_component = [
@@ -4962,8 +5717,8 @@ class TestClass:
                     X_train, Y_train, X_val, Y_val = self.snv(
                         X_train, Y_train, X_val, Y_val
                     )
-                    weights_train = weights[splits != split]
-                    weights_val = weights[splits == split]
+                    weights_train = sample_weight[splits != split]
+                    weights_val = sample_weight[splits == split]
                     model.fit(X_train, Y_train, n_components, weights_train)
                     direct_preds = model.predict(X_val)
                     if isinstance(model, (JAX_Alg_1, JAX_Alg_2)):
@@ -5242,7 +5997,7 @@ class TestClass:
             X, Y, random_weights, splits, atol=1e-7, rtol=1e-7
         )
 
-    def check_nonnegative_weights(self, X, Y, weights, splits):
+    def check_nonnegative_weights(self, X, Y, sample_weight, splits):
         models = self.get_models(
             center_X=True,
             center_Y=True,
@@ -5257,13 +6012,13 @@ class TestClass:
             if isinstance(model, (FastCVPLS, JaxFastCVPLS)):
                 # The fast cross-validation classes have no fit method
                 continue
-            # Assert that a ValueError is raised when weights are negative
+            # Assert that a ValueError is raised when sample_weight are negative
             with pytest.raises(ValueError, match=match_str):
                 model.fit(
                     X=X,
                     Y=Y,
                     A=min(X.shape[0], X.shape[1]),
-                    weights=weights,
+                    sample_weight=sample_weight,
                 )
 
         for model in models:
@@ -5276,7 +6031,7 @@ class TestClass:
                         folds=splits,
                         metric_function=self.jax_rmse_per_component,
                         metric_names=["RMSE"],
-                        weights=weights,
+                        sample_weight=sample_weight,
                     )
                 elif isinstance(model, JaxFastCVPLS):
                     model.cross_validate(
@@ -5285,7 +6040,7 @@ class TestClass:
                         A=min(X.shape[0], X.shape[1]),
                         folds=splits,
                         metric_function=self.jax_rmse_per_component,
-                        weights=weights,
+                        sample_weight=sample_weight,
                         show_progress=False,
                     )
                 else:
@@ -5295,7 +6050,7 @@ class TestClass:
                         A=min(X.shape[0], X.shape[1]),
                         folds=splits,
                         metric_function=self.rmse_per_component,
-                        weights=weights,
+                        sample_weight=sample_weight,
                     )
 
     def test_nonnegative_weights(self):
@@ -5332,7 +6087,7 @@ class TestClass:
 
         self.check_nonnegative_weights(X, Y, random_weights, splits)
 
-    def check_transform(self, X, Y, weights, fit_transform, atol, rtol):
+    def check_transform(self, X, Y, sample_weight, fit_transform, atol, rtol):
         center_Xs = [False, True]
         center_Ys = [False, True]
         scale_Xs = [False, True]
@@ -5351,6 +6106,9 @@ class TestClass:
                     center_Y=center_Y,
                     scale_X=scale_X,
                     scale_Y=scale_Y,
+                    # Match scikit-learn PLSRegression (ddof=1) for the SkPLS
+                    # comparison; the repo default is now ddof=0.
+                    ddof=1,
                     fast_cv=False,
                 )
             else:
@@ -5367,17 +6125,17 @@ class TestClass:
                     center_Y=center_Y,
                     scale_X=scale_X,
                     scale_Y=scale_Y,
-                    weights=weights,
+                    sample_weight=sample_weight,
                     return_sk_pls=False,
                 )
             use_sk = (
-                center_X and center_Y and (scale_X == scale_Y) and (weights is None)
+                center_X and center_Y and (scale_X == scale_Y) and (sample_weight is None)
             )
 
             for nc in range(1, n_components + 1):
                 if fit_transform:
                     np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
-                        np_pls_alg_1.fit_transform(X=X, Y=Y, A=nc, weights=weights)
+                        np_pls_alg_1.fit_transform(X=X, Y=Y, A=nc, sample_weight=sample_weight)
                     )
                 else:
                     np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
@@ -5413,7 +6171,7 @@ class TestClass:
                 ]:
                     if fit_transform:
                         transformed_X, transformed_Y = model.fit_transform(
-                            X=X, Y=Y, A=nc, weights=weights
+                            X=X, Y=Y, A=nc, sample_weight=sample_weight
                         )
                     else:
                         transformed_X, transformed_Y = model.transform(
@@ -5455,20 +6213,20 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         # Decrease the amount of samples and features in the interest of time.
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] == 1
 
         self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
         self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, weights, fit_transform=False, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, weights, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6)
 
     def test_transform_pls_2_m_less_k(self):
         """
@@ -5489,20 +6247,20 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
 
         self.check_transform(X, Y, None, fit_transform=False, atol=5e-4, rtol=5e-4)
         self.check_transform(X, Y, None, fit_transform=True, atol=5e-4, rtol=5e-4)
-        self.check_transform(X, Y, weights, fit_transform=False, atol=5e-4, rtol=5e-4)
-        self.check_transform(X, Y, weights, fit_transform=True, atol=5e-4, rtol=5e-4)
+        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=5e-4, rtol=5e-4)
+        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=5e-4, rtol=5e-4)
 
     def test_transform_pls_2_m_eq_k(self):
         """
@@ -5523,20 +6281,20 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 2
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] == X.shape[1]
 
         self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
         self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, weights, fit_transform=False, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, weights, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6)
 
     def test_transform_pls_2_m_greater_k(self):
         """
@@ -5559,22 +6317,22 @@ class TestClass:
                 "Wheat_H4",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 3
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
 
         self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
         self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, weights, fit_transform=False, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, weights, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6)
+        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6)
 
-    def check_inverse_transform(self, X, Y, weights, atol, rtol):
+    def check_inverse_transform(self, X, Y, sample_weight, atol, rtol):
         center_Xs = [False, True]
         center_Ys = [False, True]
         scale_Xs = [False, True]
@@ -5595,12 +6353,12 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=weights,
+                sample_weight=sample_weight,
                 return_sk_pls=False,
             )
 
             use_sk = (
-                center_X and center_Y and (scale_X == scale_Y) and (weights is None)
+                center_X and center_Y and (scale_X == scale_Y) and (sample_weight is None)
             )
 
             for nc in range(1, n_components + 1):
@@ -5687,18 +6445,18 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         # Decrease the amount of samples and features in the interest of time.
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] == 1
 
         self.check_inverse_transform(X, Y, None, atol=1e-6, rtol=1e-6)
-        self.check_inverse_transform(X, Y, weights, atol=1e-6, rtol=1e-6)
+        self.check_inverse_transform(X, Y, sample_weight, atol=1e-6, rtol=1e-6)
 
     def test_inverse_transform_pls_2_m_less_k(self):
         """
@@ -5719,18 +6477,18 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
 
         self.check_inverse_transform(X, Y, None, atol=1e-5, rtol=1e-5)
-        self.check_inverse_transform(X, Y, weights, atol=1e-5, rtol=1e-5)
+        self.check_inverse_transform(X, Y, sample_weight, atol=1e-5, rtol=1e-5)
 
     def test_inverse_transform_pls_2_m_eq_k(self):
         """
@@ -5751,18 +6509,18 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 2
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] == X.shape[1]
 
         self.check_inverse_transform(X, Y, None, atol=1e-6, rtol=1e-6)
-        self.check_inverse_transform(X, Y, weights, atol=1e-6, rtol=1e-6)
+        self.check_inverse_transform(X, Y, sample_weight, atol=1e-6, rtol=1e-6)
 
     def test_inverse_transform_pls_2_m_greater_k(self):
         """
@@ -5785,21 +6543,21 @@ class TestClass:
                 "Wheat_H4",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 3
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
 
         self.check_inverse_transform(X, Y, None, atol=1e-6, rtol=1e-6)
-        self.check_inverse_transform(X, Y, weights, atol=1e-6, rtol=1e-6)
+        self.check_inverse_transform(X, Y, sample_weight, atol=1e-6, rtol=1e-6)
 
     def check_transform_inverse_transform_different_shapes_X_Y(
-        self, X, Y, weights, atol, rtol
+        self, X, Y, sample_weight, atol, rtol
     ):
         center_Xs = [False, True]
         center_Ys = [False, True]
@@ -5821,7 +6579,7 @@ class TestClass:
                 center_Y=center_Y,
                 scale_X=scale_X,
                 scale_Y=scale_Y,
-                weights=weights,
+                sample_weight=sample_weight,
                 return_sk_pls=False,
             )
 
@@ -5909,13 +6667,13 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         # Decrease the amount of samples and features in the interest of time.
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] == 1
 
@@ -5923,7 +6681,7 @@ class TestClass:
             X, Y, None, atol=1e-6, rtol=1e-6
         )
         self.check_transform_inverse_transform_different_shapes_X_Y(
-            X, Y, weights, atol=1e-6, rtol=1e-6
+            X, Y, sample_weight, atol=1e-6, rtol=1e-6
         )
 
     def test_transform_inverse_transform_different_shapes_X_Y_pls_2_m_less_k(self):
@@ -5946,12 +6704,12 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
@@ -5960,7 +6718,7 @@ class TestClass:
             X, Y, None, atol=1e-5, rtol=1e-5
         )
         self.check_transform_inverse_transform_different_shapes_X_Y(
-            X, Y, weights, atol=1e-5, rtol=1e-5
+            X, Y, sample_weight, atol=1e-5, rtol=1e-5
         )
 
     def test_transform_inverse_transform_different_shapes_X_Y_pls_2_m_eq_k(self):
@@ -5983,12 +6741,12 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 2
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] == X.shape[1]
@@ -5997,7 +6755,7 @@ class TestClass:
             X, Y, None, atol=1e-6, rtol=1e-6
         )
         self.check_transform_inverse_transform_different_shapes_X_Y(
-            X, Y, weights, atol=1e-6, rtol=1e-6
+            X, Y, sample_weight, atol=1e-6, rtol=1e-6
         )
 
     def test_transform_inverse_transform_different_shapes_X_Y_pls_2_m_greater_k(self):
@@ -6022,12 +6780,12 @@ class TestClass:
                 "Wheat_H4",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         step = 100
         cutoff = 3
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
@@ -6036,7 +6794,7 @@ class TestClass:
             X, Y, None, atol=1e-6, rtol=1e-6
         )
         self.check_transform_inverse_transform_different_shapes_X_Y(
-            X, Y, weights, atol=1e-6, rtol=1e-6
+            X, Y, sample_weight, atol=1e-6, rtol=1e-6
         )
 
     def check_transform_inverse_transform_refit_transform_inverse_transform(
@@ -6054,6 +6812,9 @@ class TestClass:
             center_Y=center_Y,
             scale_X=scale_X,
             scale_Y=scale_Y,
+            # Match scikit-learn PLSRegression (ddof=1) for the SkPLS comparison;
+            # the repo default is now ddof=0.
+            ddof=1,
             fast_cv=False,
         )
         for X_to_use, Y_to_use, n_components_to_use in [
@@ -6237,13 +6998,13 @@ class TestClass:
 
         self.check_R_Y_access(X, Y)
 
-    def check_copy(self, X, Y, weights, splits):
+    def check_copy(self, X, Y, sample_weight, splits):
         center_X = center_Y = scale_X = scale_Y = True
         n_components = min(X.shape[0], X.shape[1])
         X_copy = np.copy(X)
         Y_copy = np.copy(Y)
-        if weights is not None:
-            weights_copy = np.copy(weights)
+        if sample_weight is not None:
+            weights_copy = np.copy(sample_weight)
         (
             np_pls_alg_1,
             np_pls_alg_2,
@@ -6266,29 +7027,29 @@ class TestClass:
             jax_pls_alg_1,
             jax_pls_alg_2,
         ]:
-            model.fit(X=X, Y=Y, A=n_components, weights=weights)
+            model.fit(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
             assert_allclose(X, X_copy, atol=0, rtol=0)
             assert_allclose(Y, Y_copy, atol=0, rtol=0)
-            if weights is not None:
-                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            if sample_weight is not None:
+                assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
 
             model.predict(X=X)
             assert_allclose(X, X_copy, atol=0, rtol=0)
             assert_allclose(Y, Y_copy, atol=0, rtol=0)
-            if weights is not None:
-                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            if sample_weight is not None:
+                assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
 
             model.transform(X=X, Y=Y, n_components=n_components)
             assert_allclose(X, X_copy, atol=0, rtol=0)
             assert_allclose(Y, Y_copy, atol=0, rtol=0)
-            if weights is not None:
-                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            if sample_weight is not None:
+                assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
 
-            model.fit_transform(X=X, Y=Y, A=n_components, weights=weights)
+            model.fit_transform(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
             assert_allclose(X, X_copy, atol=0, rtol=0)
             assert_allclose(Y, Y_copy, atol=0, rtol=0)
-            if weights is not None:
-                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            if sample_weight is not None:
+                assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
 
         for model in [fast_cv_pls_alg_1, fast_cv_pls_alg_2]:
             model.cross_validate(
@@ -6297,25 +7058,25 @@ class TestClass:
                 A=n_components,
                 folds=splits,
                 metric_function=self.rmse_per_component,
-                weights=weights,
+                sample_weight=sample_weight,
             )
             assert_allclose(X, X_copy, atol=0, rtol=0)
             assert_allclose(Y, Y_copy, atol=0, rtol=0)
-            if weights is not None:
-                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            if sample_weight is not None:
+                assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
             model.cross_validate(
                 X=X,
                 Y=X,
                 A=n_components,
                 folds=splits,
                 metric_function=self.rmse_per_component,
-                weights=weights,
+                sample_weight=sample_weight,
                 n_jobs=1,
             )
             assert_allclose(X, X_copy, atol=0, rtol=0)
             assert_allclose(Y, Y_copy, atol=0, rtol=0)
-            if weights is not None:
-                assert_allclose(weights, weights_copy, atol=0, rtol=0)
+            if sample_weight is not None:
+                assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
 
         for model in [jax_fast_cv_pls_alg_1, jax_fast_cv_pls_alg_2]:
             # Both a single vmap batch (None) and a chunked batch must leave inputs intact.
@@ -6326,14 +7087,14 @@ class TestClass:
                     A=n_components,
                     folds=splits,
                     metric_function=self.jax_rmse_per_component,
-                    weights=weights,
+                    sample_weight=sample_weight,
                     batch_size=batch_size,
                     show_progress=False,
                 )
                 assert_allclose(X, X_copy, atol=0, rtol=0)
                 assert_allclose(Y, Y_copy, atol=0, rtol=0)
-                if weights is not None:
-                    assert_allclose(weights, weights_copy, atol=0, rtol=0)
+                if sample_weight is not None:
+                    assert_allclose(sample_weight, weights_copy, atol=0, rtol=0)
 
     def test_copy_pls_1(self):
         """
@@ -6349,19 +7110,19 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = self.load_Y(["split"]).squeeze().astype(np.int64)
         # Decrease the amount of samples and features in the interest of time.
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
         splits = splits[::step]
 
         assert Y.shape[1] == 1
         self.check_copy(X, Y, None, splits)
-        self.check_copy(X, Y, weights, splits)
+        self.check_copy(X, Y, sample_weight, splits)
 
     def test_copy_pls_2_m_less_k(self):
         """
@@ -6383,19 +7144,19 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = self.load_Y(["split"]).squeeze().astype(np.int64)
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
         splits = splits[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
         self.check_copy(X, Y, None, splits)
-        self.check_copy(X, Y, weights, splits)
+        self.check_copy(X, Y, sample_weight, splits)
 
     def test_copy_pls_2_m_greater_k(self):
         """
@@ -6419,21 +7180,21 @@ class TestClass:
                 "Wheat_H4",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = self.load_Y(["split"]).squeeze().astype(np.int64)
         step = 100
         cutoff = 3
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
         splits = splits[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
         self.check_copy(X, Y, None, splits)
-        self.check_copy(X, Y, weights, splits)
+        self.check_copy(X, Y, sample_weight, splits)
 
-    def check_dtype(self, X, Y, weights, splits):
+    def check_dtype(self, X, Y, sample_weight, splits):
         center_Xs = [False, True]
         center_Ys = [False, True]
         scale_Xs = [False, True]
@@ -6475,7 +7236,7 @@ class TestClass:
                     else:
                         raise ValueError(f"Invalid number of float bits: {fb}")
 
-                    model.fit(X=X, Y=Y, A=n_components, weights=weights)
+                    model.fit(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
                     assert model.B.dtype == dtype, err_msg
 
                     res = model.predict(X=X)
@@ -6496,7 +7257,7 @@ class TestClass:
                     assert riY.dtype == dtype, err_msg
 
                     T, U = model.fit_transform(
-                        X=X, Y=Y, A=n_components, weights=weights
+                        X=X, Y=Y, A=n_components, sample_weight=sample_weight
                     )
                     assert T.dtype == dtype, err_msg
                     assert U.dtype == dtype, err_msg
@@ -6513,7 +7274,7 @@ class TestClass:
                 else:
                     raise ValueError(f"Invalid number of float bits: {fb}")
 
-                model.fit(X=X, Y=Y, A=n_components, weights=weights)
+                model.fit(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
                 assert model.B.dtype == dtype, err_msg
 
                 res = model.predict(X=X)
@@ -6533,7 +7294,7 @@ class TestClass:
                 assert riX.dtype == dtype, err_msg
                 assert riY.dtype == dtype, err_msg
 
-                T, U = model.fit_transform(X=X, Y=Y, A=n_components, weights=weights)
+                T, U = model.fit_transform(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
                 assert T.dtype == dtype, err_msg
                 assert U.dtype == dtype, err_msg
 
@@ -6551,7 +7312,7 @@ class TestClass:
                     A=n_components,
                     folds=splits,
                     metric_function=self.rmse_per_component,
-                    weights=weights,
+                    sample_weight=sample_weight,
                 )
                 for fold in res:
                     assert res[fold].dtype == dtype, err_msg
@@ -6570,7 +7331,7 @@ class TestClass:
                     A=n_components,
                     folds=splits,
                     metric_function=self.jax_rmse_per_component,
-                    weights=weights,
+                    sample_weight=sample_weight,
                     show_progress=False,
                 )
                 for fold in res:
@@ -6590,19 +7351,19 @@ class TestClass:
         """
         X = self.load_X()
         Y = self.load_Y(["Protein"])
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = self.load_Y(["split"]).squeeze().astype(np.int64)
         # Decrease the amount of samples and features in the interest of time.
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
         splits = splits[::step]
 
         assert Y.shape[1] == 1
         self.check_dtype(X, Y, None, splits)
-        self.check_dtype(X, Y, weights, splits)
+        self.check_dtype(X, Y, sample_weight, splits)
 
     def test_dtype_pls_2_m_less_k(self):
         """
@@ -6623,19 +7384,19 @@ class TestClass:
                 "Protein",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = self.load_Y(["split"]).squeeze().astype(np.int64)
         step = 100
         cutoff = 10
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
         splits = splits[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
         self.check_dtype(X, Y, None, splits)
-        self.check_dtype(X, Y, weights, splits)
+        self.check_dtype(X, Y, sample_weight, splits)
 
     def test_dtype_pls_2_m_greater_k(self):
         """
@@ -6658,16 +7419,16 @@ class TestClass:
                 "Wheat_H4",
             ]
         )
-        weights = self.load_weights(None)
+        sample_weight = self.load_weights(None)
         splits = self.load_Y(["split"]).squeeze().astype(np.int64)
         step = 100
         cutoff = 3
         X = X[::step, :cutoff]
         Y = Y[::step]
-        weights = weights[::step]
+        sample_weight = sample_weight[::step]
         splits = splits[::step]
 
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
         self.check_dtype(X, Y, None, splits)
-        self.check_dtype(X, Y, weights, splits)
+        self.check_dtype(X, Y, sample_weight, splits)

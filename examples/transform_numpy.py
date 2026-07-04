@@ -13,7 +13,7 @@ E-mail: ocge@foss.dk
 
 import numpy as np
 
-from ikpls.numpy_ikpls import PLS
+from ikpls.numpy import PLS
 
 if __name__ == "__main__":
     N = 100  # Number of samples.
@@ -90,3 +90,15 @@ if __name__ == "__main__":
             T=X_scores_using_all_components, U=Y_scores_using_five_components
         )
     )  # We can use different numbers of components for X scores and Y scores
+
+    print("X scores (all components), shape:", X_scores_using_all_components.shape)
+    print("Y scores (all components), shape:", Y_scores_using_all_components.shape)
+    print("X scores (5 components), shape:", X_scores_using_five_components.shape)
+    print(
+        "X reconstructed (all components), shape:",
+        X_reconstructed_using_all_components.shape,
+    )
+    print(
+        "Y reconstructed (5 components), shape:",
+        Y_reconstructed_using_five_components.shape,
+    )
