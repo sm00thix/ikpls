@@ -22,7 +22,7 @@ is ``False``) and ``from ikpls import jax`` raises ``ImportError``.
 
 import importlib
 
-__version__ = "6.0.0"
+__version__ = "6.0.1"
 
 # ``jax`` is intentionally omitted from ``__all__`` so that ``from ikpls import *``
 # never requires the optional JAX dependency; it stays accessible as ``ikpls.jax``.
