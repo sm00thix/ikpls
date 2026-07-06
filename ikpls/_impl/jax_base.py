@@ -16,7 +16,7 @@ import abc
 from collections import defaultdict
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Optional, Self, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -930,7 +930,7 @@ class PLSBase(abc.ABC):
     @abc.abstractmethod
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, sample_weight: Optional[ArrayLike] = None
-    ) -> Self:
+    ) -> "PLSBase":
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 

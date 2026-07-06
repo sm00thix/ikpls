@@ -1,13 +1,14 @@
 [project]
 name = "ikpls"
-version = "6.0.0"
+version = "6.0.1"
 description = "Improved Kernel PLS and Fast Cross-Validation."
 authors = [{ name = "sm00thix", email = "oleemail@icloud.com" }]
 maintainers = [{ name = "sm00thix", email = "oleemail@icloud.com" }]
 license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.11, <3.15"
+requires-python = ">=3.10, <3.15"
 classifiers = [
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -17,17 +18,20 @@ dependencies = [
     "numpy>=2.0.0",
     "scikit-learn>=1.6.0",
     "joblib>=1.3.2",
-    "cvmatrix>=3.2.1",
+    "cvmatrix>=3.2.2",
 ]
 
 [project.optional-dependencies]
 # Optional JAX backend. The JAX fast cross-validation
-# (ikpls.fast_cross_validation.jax) drives the cvmatrix JAX backend, which was
-# introduced in cvmatrix 3.2.0; cvmatrix 3.2.1 additionally avoids importing JAX
-# at module import time, so `import ikpls.fast_cross_validation.numpy` stays
-# JAX-free. tqdm is only used by the JAX implementations (the cross_validate
-# progress bars), so it lives here rather than in the base dependencies.
-jax = ["jax>=0.5.0", "jaxlib>=0.5.0", "cvmatrix>=3.2.1", "tqdm>=4.66.1"]
+# (ikpls.fast_cross_validation.jax) drives the cvmatrix JAX backend
+# (CVMatrix(backend="jax")), so it depends on the cvmatrix[jax] extra rather
+# than plain cvmatrix. The cvmatrix JAX backend was introduced in cvmatrix
+# 3.2.0; cvmatrix 3.2.1 additionally avoids importing JAX at module import time,
+# so `import ikpls.fast_cross_validation.numpy` stays JAX-free; cvmatrix 3.2.2 is
+# the first release supporting Python 3.10. tqdm is only used by the JAX
+# implementations (the cross_validate progress bars), so it lives here rather
+# than in the base dependencies.
+jax = ["jax>=0.5.0", "jaxlib>=0.5.0", "cvmatrix[jax]>=3.2.2", "tqdm>=4.66.1"]
 
 [project.urls]
 Homepage = "https://ikpls.readthedocs.io/en/latest/"

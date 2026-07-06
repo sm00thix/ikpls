@@ -11,7 +11,7 @@ E-mail: ocge@foss.dk
 """
 
 from functools import partial
-from typing import Optional, Self, Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -304,7 +304,7 @@ class PLS(PLSBase):
 
     def fit(
         self, X: ArrayLike, Y: ArrayLike, A: int, sample_weight: Optional[ArrayLike] = None
-    ) -> Self:
+    ) -> "PLS":
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 

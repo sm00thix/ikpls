@@ -17,7 +17,7 @@ E-mail: ocge@foss.dk
 
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Optional, Self, Tuple, Union
+from typing import Any, Iterable, Optional, Tuple, Union
 
 import joblib
 import numpy as np
@@ -339,7 +339,7 @@ class PLS:
             raise ValueError("Weights must be non-negative.")
 
     def _check_num_nonzero_weights_greater_than_ddof(
-        self, num_nonzero_weights: np.intp
+        self, num_nonzero_weights: Union[int, np.integer]
     ) -> None:
         """
         Checks that the number of nonzero weights are greater than `self.ddof` if
@@ -349,7 +349,9 @@ class PLS:
         Parameters
         ----------
         num_nonzero_weights : int
-            The number of nonzero weights."
+            The number of nonzero weights. ``np.count_nonzero`` returns a builtin
+            ``int`` on NumPy < 2.4 and an ``np.intp`` on newer NumPy, so both are
+            admitted."
 
         Returns
         -------
@@ -478,7 +480,7 @@ class PLS:
         Y: npt.ArrayLike,
         A: int,
         sample_weight: Optional[npt.ArrayLike] = None,
-    ) -> Self:
+    ) -> "PLS":
         """
         Fits Improved Kernel PLS Algorithm #1 on `X` and `Y` using `A` components.
 
