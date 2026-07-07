@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.1.0] - 2026-07-07
+### Changed
+- `ikpls.sklearn.PLS.fit_transform` now returns the `(X-scores, Y-scores)` tuple, matching `sklearn.cross_decomposition.PLSRegression.fit_transform` and `ikpls.numpy.PLS.fit_transform`. Previously the wrapper inherited `sklearn.base.TransformerMixin.fit_transform`, which calls `transform(X)` and therefore returned only the X-scores (ignoring `Y`). The override fits through `fit` (so a subclass overriding `fit` still runs) and returns `transform(X, y)`, keeping `fit_transform` consistent with `fit(...).transform(...)`. This is a behavior change for callers that relied on the previous X-scores-only return.
+- As a consequence, `ikpls.sklearn.PLS` now has two expected failures in scikit-learn's `check_estimator` suite (`check_transformer_general` and `check_transformer_data_not_an_array`). Those checks compare `fit_transform(X, y)` against `transform(X)`; scikit-learn only compares the `(X-scores, Y-scores)` tuple against the tuple-returning `transform(X, y)` for a hard-coded set of class names (`CROSS_DECOMPOSITION`: `PLSRegression`, `PLSCanonical`, `CCA`, `PLSSVD`), and this class is named `PLS`. scikit-learn's own `PLSRegression` has identical tuple behavior and passes only by virtue of its name, so these are not real conformance defects; the conformance test marks them as expected failures.
+
 ## [6.0.1] - 2026-07-06
 ### Changed
 - Lowered the minimum supported Python version from 3.11 to 3.10 (`requires-python = ">=3.10, <3.15"`) and added Python 3.10 to the CI test matrices. This broadens compatibility for downstream packages that still support Python 3.10 (e.g. [chemotools](https://github.com/paucablop/chemotools)). The only 3.11-only construct in the code base was the `typing.Self` return annotation on the four `fit` methods; these are now annotated with the class name instead (equivalent for runtime type checking, and ikpls ships no `py.typed` marker, so static type checkers are unaffected). On Python 3.10, `pip install ikpls[jax]` resolves an older JAX (recent JAX releases require Python 3.11+); the NumPy-only core is unaffected. No behavioral changes.

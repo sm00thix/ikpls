@@ -327,6 +327,38 @@ class PLS(
         self.intercept_ = y_mean  # (M,) == scikit-learn PLSRegression's intercept_
         return self
 
+    def fit_transform(self, X, y=None, **fit_params):
+        """Fit the model, then return the training scores.
+
+        The default ``TransformerMixin.fit_transform`` calls ``transform(X)`` and
+        thus returns only the X-scores. This override instead fits and returns
+        ``transform(X, y)`` -- i.e. the ``(x_scores, y_scores)`` tuple, matching
+        ``ikpls.numpy.PLS.fit_transform`` and
+        ``sklearn.cross_decomposition.PLSRegression.fit_transform``. It goes
+        through :meth:`fit` (so a subclass overriding ``fit`` still runs) and
+        then :meth:`transform`, so ``fit_transform`` stays consistent with
+        ``fit(...).transform(...)``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Predictor variables.
+
+        y : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Response variables. Required (PLS is supervised).
+
+        **fit_params : dict
+            Extra keyword arguments forwarded to :meth:`fit` (e.g.
+            ``sample_weight``).
+
+        Returns
+        -------
+        (x_scores, y_scores) : tuple of ndarray
+            The training X-scores and Y-scores, each of shape
+            ``(n_samples, n_components)``.
+        """
+        return self.fit(X, y, **fit_params).transform(X, y)
+
     @property
     def y_rotations_(self):
         """The rotations mapping ``Y`` directly to its scores.
