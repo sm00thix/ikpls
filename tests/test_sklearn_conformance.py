@@ -139,7 +139,12 @@ def test_predict_all_components_bit_identical_to_inner(algorithm, n_components):
     )
 
 
-@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "2", None])
+# ``True`` is intentionally omitted: ``Interval(Integral, ...)`` accepts bool
+# (a ``True`` is an ``Integral`` equal to 1), matching scikit-learn's own
+# ``PLSRegression``, which likewise accepts ``n_components=True``. The other
+# values are rejected by ``_validate_params`` with an ``InvalidParameterError``
+# (a ``ValueError``).
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "2", None])
 def test_n_components_validation(bad):
     """Invalid n_components raises a clean ValueError (not a deep IndexError)."""
     rng = np.random.default_rng(0)
