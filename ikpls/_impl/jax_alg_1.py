@@ -260,9 +260,13 @@ class PLS(PLSBase):
         # must be exact equality with zero -- NOT a tolerance like tTt <= eps -- because
         # tTt scales with the data magnitude: legitimately small-magnitude unscaled
         # data has tiny-but-nonzero tTt that must be divided through exactly as NumPy
-        # does (NumPy has no tTt guard at all; its only break conditions are the
-        # _step_2 weight norms). Live components are therefore byte-identical. The
-        # ORIGINAL tTt is returned; _step_5 only multiplies by it.
+        # does. NumPy's p/q division has no tTt tolerance either -- it divides by the
+        # raw tTt -- so live components stay byte-identical. (NumPy does stop its
+        # component loop on a RELATIVE tTt collapse, but only to drop null-space
+        # components past the numerical rank; it never rescales a live component's
+        # division, and the relative floor is far below the tiny-but-nonzero tTt of
+        # small-magnitude data.) The ORIGINAL tTt is returned; _step_5 only multiplies
+        # by it.
         safe_tTt = jnp.where(tTt == 0.0, 1.0, tTt)
         p = (tT @ X).T / safe_tTt
         q = self._step_4_compute_q(r, XTY, safe_tTt, M, K, norm, q, largest_eigval)
@@ -279,6 +283,7 @@ class PLS(PLSBase):
     ) -> Tuple[
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         Tuple[
+            jax.Array,
             jax.Array,
             jax.Array,
             jax.Array,
@@ -317,9 +322,11 @@ class PLS(PLSBase):
         carry : tuple
             Updated ``(XTY, P, R, b)``.
 
-        outputs : tuple of (w (K,), p (K,), q (M,), r (K,), t (N,), b (K, M))
+        outputs : tuple of (w (K,), p (K,), q (M,), r (K,), t (N,), tTt (), norm (), b (K, M))
             Per-component outputs, stacked by `lax.scan` along a leading axis of length
-            ``A`` to yield W (A, K), P (A, K), Q (A, M), R (A, K), T (A, N), B (A, K, M).
+            ``A`` to yield W (A, K), P (A, K), Q (A, M), R (A, K), T (A, N), tTt (A,),
+            norms (A,), B (A, K, M). ``tTt`` is the score norm ||t||^2 (the p/q
+            denominator), reused for the max_stable_components diagnostic.
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_scan_body for {self.name} will be JIT compiled...")
@@ -345,6 +352,7 @@ class PLS(PLSBase):
             q.reshape(M),
             r.reshape(K),
             t.reshape(-1),
+            tTt.reshape(()),
             step_2_res[1].reshape(()),
             b,
         )
@@ -602,11 +610,41 @@ class PLS(PLSBase):
         def body(carry, i):
             return self._scan_body(X, M, K, A, carry, i)
 
-        _, (W, P, Q, R, T, norms, B) = jax.lax.scan(body, init, jnp.arange(A))
+        _, (W, P, Q, R, T, tTt, norms, B) = jax.lax.scan(body, init, jnp.arange(A))
 
-        # On-device count of numerically stable components (no host callback): the
-        # number of leading components whose weight norm did not underflow below eps.
+        # On-device count of numerically stable components (no host callback). A
+        # component is unstable if its X-weight norm underflowed below eps (X-Y
+        # cross-covariance exhausted) OR its score norm t^T t collapsed relative to
+        # the largest score norm seen SO FAR -- a null-space direction past the
+        # numerical rank of X, which the weight norm alone does not catch (deflating
+        # XTY by (p q^T) tTt barely changes XTY when tTt ~ 0). The score threshold is
+        # RELATIVE, and RUNNING (cumulative max), not global: this matches the NumPy
+        # inner loop, which breaks at the first collapse and therefore only ever
+        # compares against the max of the components seen up to that point. A global
+        # jnp.max here would disagree with NumPy on non-monotonic tTt (e.g. unscaled
+        # data where a high-covariance/low-variance component is extracted before a
+        # high-variance one), flagging a legitimate leading component and diverging on
+        # max_stable_components / predictions. Diagnostic only: it does not alter
+        # B/W/P/Q/R/T (the p/q division still uses the raw tTt), so live components
+        # stay byte-identical.
         underflow = jnp.isclose(norms, 0, atol=self.eps, rtol=0)
-        max_stable_components = jnp.where(jnp.any(underflow), jnp.argmax(underflow), A)
+        # tTt (score norm ||t||^2 per component) is returned by the scan body, where it
+        # is already computed as the p/q denominator -- no need to recompute it here.
+        score_collapse = tTt <= self.eps * jax.lax.cummax(tTt)
+        unstable = underflow | score_collapse
+        max_stable_components = jnp.where(jnp.any(unstable), jnp.argmax(unstable), A)
+
+        # Carry the last stable regression coefficient forward: components past
+        # max_stable_components are null-space directions that add no predictive
+        # information, so predictions with more components must equal those with
+        # max_stable_components. This matches the NumPy backend and replaces the
+        # garbage the raw over-extracted coefficients would otherwise contain. When
+        # max_stable_components == 0 there is no stable component and B stays as-is
+        # (all-zero for a fully degenerate fit -> intercept-only predictions).
+        safe_last = jnp.maximum(max_stable_components - 1, 0)
+        carry_idx = jnp.where(
+            jnp.arange(A) < max_stable_components, jnp.arange(A), safe_last
+        )
+        B = B[carry_idx]
 
         return B, W, P, Q, R, T, max_stable_components, X_mean, Y_mean, X_std, Y_std

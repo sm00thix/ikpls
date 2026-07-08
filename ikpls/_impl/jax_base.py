@@ -898,9 +898,11 @@ class PLSBase(abc.ABC):
             PLS scores matrix of X. Only Returned for Improved Kernel PLS Algorithm #1.
 
         max_stable_components : int
-            The number of leading components that are numerically stable (whose weight
-            norm did not underflow below machine epsilon); equals `A` when no underflow
-            occurs.
+            The number of leading, numerically stable components -- the index of the
+            first component whose X-weight norm underflows below machine epsilon (X-Y
+            cross-covariance exhausted) or whose score norm ``t^T t`` collapses relative
+            to the largest score norm seen so far (a null-space direction past the numerical
+            rank of X). Equals `A` when neither occurs.
 
         X_mean : Array of shape (1, K) or None
             Mean of the predictor variables `center_X` is True, otherwise None.
@@ -955,10 +957,13 @@ class PLSBase(abc.ABC):
             Number of components in the PLS model.
 
         max_stable_components : int
-            The number of leading components that are numerically stable (whose weight
-            norm did not underflow below machine epsilon); equals `A` when no underflow
-            occurs. Computed on-device with no host callback, so it is also returned by
-            `stateless_fit` and is therefore available per fit under `jax.vmap`.
+            The number of leading, numerically stable components -- the index of the
+            first component whose X-weight norm underflows below machine epsilon (X-Y
+            cross-covariance exhausted) or whose score norm ``t^T t`` collapses relative
+            to the largest score norm seen so far (a null-space direction past the numerical
+            rank of X). Equals `A` when neither occurs. Computed on-device with no host
+            callback, so it is also returned by `stateless_fit` and is therefore
+            available per fit under `jax.vmap`.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.

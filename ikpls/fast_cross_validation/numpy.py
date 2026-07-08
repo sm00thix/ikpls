@@ -11,7 +11,6 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
-import warnings
 from collections.abc import Callable, Hashable
 from typing import Any, Iterable, Optional
 
@@ -128,24 +127,6 @@ class PLS:
         if self.algorithm == 1:
             self.all_indices = None
 
-    def _weight_warning(self, i: int) -> None:
-        """
-        Raises a warning if the weight is close to zero.
-
-        Parameters
-        ----------
-        norm : float
-            The norm of the weight vector.
-
-        i : int
-            The current number of components.
-        """
-        warnings.warn(
-            message=f"Weight is close to zero. Results with A = {i + 1} "
-            "component(s) or higher may be unstable.",
-            category=UserWarning,
-        )
-
     def _stateless_fit(
         self,
         validation_indices: npt.NDArray[np.int_],
@@ -241,8 +222,10 @@ class PLS:
             training_X_mean, training_X_std, training_Y_mean, training_Y_std = result[1]
             training_X = None
 
-        # Execute Improved Kernel PLS steps 2-5 (shared with the standard fit).
-        B, W, P, Q, R, T = improved_kernel_pls_inner_loop(
+        # Execute Improved Kernel PLS steps 2-5 (shared with the standard fit). The
+        # trailing max-stable-components count is not tracked per fold here; the inner
+        # loop emits any underflow/collapse warnings itself.
+        B, W, P, Q, R, T, _ = improved_kernel_pls_inner_loop(
             self.algorithm,
             self.A,
             self.K,
@@ -252,7 +235,6 @@ class PLS:
             XTX=training_XTX,
             dtype=self.dtype,
             eps=self.eps,
-            weight_warning=self._weight_warning,
         )
 
         # Return PLS matrices and training set statistics

@@ -23,9 +23,11 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
-import numbers
+from numbers import Integral
+from typing import Any, Optional, Tuple, Union
 
 import numpy as np
+import numpy.typing as npt
 from sklearn.base import (
     BaseEstimator,
     ClassNamePrefixFeaturesOutMixin,
@@ -34,9 +36,30 @@ from sklearn.base import (
     TransformerMixin,
 )
 from sklearn.metrics import r2_score
+from sklearn.utils import Tags
+from sklearn.utils._param_validation import Interval, Options
 from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
 from ikpls.numpy import PLS as _NumpyPLS
+
+# Array-like data arguments to the public methods (``X`` / ``y`` /
+# ``sample_weight``) are typed ``Any`` rather than ``npt.ArrayLike`` on purpose.
+# Each public method is a validation boundary: it delegates to scikit-learn's
+# ``validate_data`` / ``check_array``, which raise the sklearn-conformant errors
+# for unsupported input (e.g. sparse matrices rejected because
+# ``input_tags.sparse`` is False). The test suite runs with typeguard
+# (``--typeguard-packages=ikpls``); a strict ``npt.ArrayLike`` annotation would
+# make typeguard raise a ``TypeCheckError`` on such adversarial input *before* the
+# body runs, pre-empting that validation and breaking ``check_estimator``. The
+# honest array-like shapes are documented in each method's docstring instead.
+_ArrayLikeInput = Any
+
+# Return type of the score-producing methods: the X-scores alone, or the
+# (X-scores, Y-scores) tuple when Y is supplied.
+_Scores = Union[
+    npt.NDArray[np.floating],
+    Tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]],
+]
 
 
 class PLS(
@@ -127,6 +150,17 @@ class PLS(
     n_features_in_ : int
         Number of features seen during :meth:`fit`.
 
+    max_stable_components_ : int
+        Number of leading, numerically stable components determined during
+        :meth:`fit` (from the inner ``ikpls.numpy.PLS.max_stable_components``).
+        Equals ``n_components`` unless a component is detected as unstable -- when an
+        X-weight norm underflows below machine epsilon (the X-Y cross-covariance is
+        exhausted) or a component's score norm ``t^T t`` collapses relative to the
+        largest score norm seen so far (a null-space direction past the numerical rank
+        of ``X``). Components past this count carry no predictive information: the
+        coefficients are carried forward, so ``predict`` with more components returns
+        the same result as with ``max_stable_components_``.
+
     Notes
     -----
     Improved Kernel PLS does not form a separate Y-weights matrix in its inner
@@ -144,8 +178,28 @@ class PLS(
     ``X`` scores and ``Y`` scores can be obtained via the `transform` method.
     """
 
+    # scikit-learn parameter constraints, validated at fit by _validate_params.
+    _parameter_constraints: dict = {
+        "n_components": [Interval(Integral, 1, None, closed="left")],
+        "algorithm": [Options(Integral, {1, 2})],
+        "center_X": ["boolean"],
+        "center_Y": ["boolean"],
+        "scale_X": ["boolean"],
+        "scale_Y": ["boolean"],
+        "ddof": [Interval(Integral, 0, None, closed="left")],
+        "copy": ["boolean"],
+        "dtype": "no_validation",
+    }
+
     def __init__(
         self,
+        # The constructor parameters are intentionally left unannotated: the
+        # scikit-learn contract requires __init__ to store them verbatim and defer
+        # validation to fit (via _parameter_constraints / _validate_params).
+        # Annotating them would make typeguard (which the test suite runs via
+        # --typeguard-packages=ikpls) reject non-conforming values at construction
+        # instead of the clean fit-time InvalidParameterError. The expected
+        # types/values are documented in the Parameters section above.
         n_components=1,
         algorithm=1,
         center_X=True,
@@ -155,7 +209,7 @@ class PLS(
         ddof=0,
         copy=True,
         dtype=np.float64,
-    ):
+    ) -> None:
         self.n_components = n_components
         self.algorithm = algorithm
         self.center_X = center_X
@@ -166,28 +220,12 @@ class PLS(
         self.copy = copy
         self.dtype = dtype
 
-    def _validate_n_components(self):
-        """Validate ``n_components`` as a strictly positive integer.
-
-        The bare inner ``PLS`` does not validate ``A``, so ``n_components=0``
-        would otherwise surface as an opaque ``IndexError`` and
-        ``n_components=-1`` as a numpy ``ValueError`` from deep inside the
-        kernel. We raise a clean, sklearn-style ``ValueError`` in ``fit`` before
-        delegating. ``bool`` is rejected explicitly because ``bool`` is a
-        subclass of ``int`` in Python.
-        """
-        n_components = self.n_components
-        if (
-            not isinstance(n_components, numbers.Integral)
-            or isinstance(n_components, bool)
-            or n_components < 1
-        ):
-            raise ValueError(
-                "n_components must be a positive integer (>= 1); got "
-                f"{n_components!r}."
-            )
-
-    def fit(self, X, y, sample_weight=None):
+    def fit(
+        self,
+        X: _ArrayLikeInput,
+        y: Optional[_ArrayLikeInput],
+        sample_weight: Optional[_ArrayLikeInput] = None,
+    ) -> "PLS":
         """Fit the PLS model.
 
         Parameters
@@ -206,9 +244,10 @@ class PLS(
         self : object
             The fitted estimator.
         """
-        # Validate n_components first so a bad value raises a clean ValueError
-        # before any data work (sklearn-style fail-fast).
-        self._validate_n_components()
+        # Validate all constructor parameters against _parameter_constraints
+        # first, so a bad value raises a clean InvalidParameterError before any
+        # data work (sklearn-style fail-fast).
+        self._validate_params()
 
         # y is required to fit (supervised), even though the transformer side of the
         # API does not require it (target_tags.required is False). Raise a clear
@@ -277,6 +316,13 @@ class PLS(
         # Number of output features of transform() == number of components.
         # Consumed by ClassNamePrefixFeaturesOutMixin.get_feature_names_out.
         self._n_features_out = self.n_components_
+        # Number of leading, numerically stable components reported by the inner PLS
+        # (see ikpls.numpy.PLS.max_stable_components): the count before an X-weight
+        # norm underflowed or a component's score norm collapsed relative to the
+        # largest seen so far (a null-space direction past the numerical rank of X).
+        # Coefficients past this count are carried forward, so predicting with more
+        # components returns the same result as with max_stable_components_.
+        self.max_stable_components_ = int(inner.max_stable_components)
 
         # --- Fitted attributes mirroring sklearn.cross_decomposition.PLSRegression.
         # These are the inner PLS matrices; their shapes already follow sklearn's
@@ -327,8 +373,42 @@ class PLS(
         self.intercept_ = y_mean  # (M,) == scikit-learn PLSRegression's intercept_
         return self
 
+    def fit_transform(
+        self, X: _ArrayLikeInput, y: Optional[_ArrayLikeInput] = None, **fit_params
+    ) -> Tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+        """Fit the model, then return the training scores.
+
+        The default ``TransformerMixin.fit_transform`` calls ``transform(X)`` and
+        thus returns only the X-scores. This override instead fits and returns
+        ``transform(X, y)`` -- i.e. the ``(x_scores, y_scores)`` tuple, matching
+        ``ikpls.numpy.PLS.fit_transform`` and
+        ``sklearn.cross_decomposition.PLSRegression.fit_transform``. It goes
+        through :meth:`fit` (so a subclass overriding ``fit`` still runs) and
+        then :meth:`transform`, so ``fit_transform`` stays consistent with
+        ``fit(...).transform(...)``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Predictor variables.
+
+        y : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Response variables. Required (PLS is supervised).
+
+        **fit_params : dict
+            Extra keyword arguments forwarded to :meth:`fit` (e.g.
+            ``sample_weight``).
+
+        Returns
+        -------
+        (x_scores, y_scores) : tuple of ndarray
+            The training X-scores and Y-scores, each of shape
+            ``(n_samples, n_components)``.
+        """
+        return self.fit(X, y, **fit_params).transform(X, y)
+
     @property
-    def y_rotations_(self):
+    def y_rotations_(self) -> npt.NDArray[np.floating]:
         """The rotations mapping ``Y`` directly to its scores.
 
         Computed lazily on first access, because it requires a pseudo-inverse
@@ -355,7 +435,7 @@ class PLS(
         # attribute independent of the inner model, matching the eager attrs above.
         return np.array(self.inner_.R_Y[self.n_components_], dtype=self.dtype)
 
-    def predict(self, X):
+    def predict(self, X: _ArrayLikeInput) -> npt.NDArray[np.floating]:
         """Predict using ``n_components`` components.
 
         Returns an array of shape ``(n_samples,)`` if ``y`` was 1D at fit time,
@@ -370,7 +450,7 @@ class PLS(
             return preds.ravel()
         return preds
 
-    def predict_all_components(self, X):
+    def predict_all_components(self, X: _ArrayLikeInput) -> npt.NDArray[np.floating]:
         """Fast all-components prediction: returns shape ``(A, N, M)``.
 
         Preserves ikpls's vectorized feature of predicting with every number
@@ -380,7 +460,9 @@ class PLS(
         X = validate_data(self, X, reset=False, dtype="numeric")
         return self.inner_.predict(X, n_components=None)
 
-    def transform(self, X, y=None):
+    def transform(
+        self, X: _ArrayLikeInput, y: Optional[_ArrayLikeInput] = None
+    ) -> _Scores:
         """Project ``X`` (and optionally ``Y``) onto the latent component space.
 
         Returns the X-scores ``T`` of shape ``(n_samples, n_components)``. If
@@ -415,7 +497,9 @@ class PLS(
         y = check_array(y, dtype="numeric", ensure_2d=False)
         return self.inner_.transform(X=X, Y=y, n_components=self.n_components_)
 
-    def inverse_transform(self, X, y=None):
+    def inverse_transform(
+        self, X: _ArrayLikeInput, y: Optional[_ArrayLikeInput] = None
+    ) -> _Scores:
         """Map scores back to the original space.
 
         ``X`` is the X-scores (as returned by :meth:`transform`); the predictors
@@ -457,7 +541,12 @@ class PLS(
         y = check_array(y, dtype=self.dtype, input_name="y")
         return self.inner_.inverse_transform(T=X, U=y)
 
-    def score(self, X, y, sample_weight=None):
+    def score(
+        self,
+        X: _ArrayLikeInput,
+        y: _ArrayLikeInput,
+        sample_weight: Optional[_ArrayLikeInput] = None,
+    ) -> float:
         """Coefficient of determination R^2 of the prediction.
 
         Predicts with ``n_components`` components and scores against ``y`` with
@@ -484,7 +573,7 @@ class PLS(
         check_is_fitted(self)
         return r2_score(y, self.predict(X), sample_weight=sample_weight)
 
-    def __sklearn_tags__(self):
+    def __sklearn_tags__(self) -> Tags:
         tags = super().__sklearn_tags__()
         # PLS is a poor generic regressor on arbitrary data; sklearn's own
         # PLSRegression sets the same flag so the regressor checks do not

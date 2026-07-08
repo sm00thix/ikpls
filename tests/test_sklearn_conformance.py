@@ -2,12 +2,13 @@
 scikit-learn API conformance tests for ``ikpls.sklearn.PLS``.
 
 The main test verifies that ``SklearnPLS`` passes scikit-learn's estimator check
-suite with zero failures. With the repo-wide default ``ddof=0`` the weighted
+suite. The only expected failures are the two transformer-consistency checks:
+``fit_transform`` returns the ``(X-scores, Y-scores)`` tuple (like sklearn's own
+``PLSRegression``), which scikit-learn special-cases only for its hard-coded
+``CROSS_DECOMPOSITION`` class names -- and ours is named ``PLS`` (see
+``_EXPECTED_FAILED_CHECKS``). With the repo-wide default ``ddof=0`` the weighted
 standard deviation is row-repetition equivalent, so the frequency-weight
-``sample_weight``-equivalence check passes and nothing is expected-fail.
-``check_estimator`` with the default ``on_fail='raise'`` raises on the first
-failure and is silent otherwise, so the test is robust across scikit-learn
-versions (>= 1.6) without hard-coding pass/skip counts.
+``sample_weight``-equivalence check passes.
 
 The remaining tests confirm the performance-preserving guarantees: the
 all-components ``(A, N, M)`` prediction stays bit-identical to the inner ``PLS``,
@@ -29,15 +30,67 @@ from ikpls.numpy import PLS as NpPLS
 from ikpls.sklearn import PLS as SklearnPLS
 
 
+# The transformer-consistency checks compare fit_transform(X, y) against
+# transform(X). PLS.fit_transform returns the (X-scores, Y-scores) tuple --
+# matching sklearn.cross_decomposition.PLSRegression.fit_transform and
+# ikpls.numpy.PLS.fit_transform -- but scikit-learn only compares tuple-to-tuple
+# for a hard-coded set of class NAMES (CROSS_DECOMPOSITION = "PLSRegression",
+# "PLSCanonical", "CCA", "PLSSVD"). For any other name it compares the tuple to
+# the X-only transform(X) and fails. Our class is named "PLS", so these are
+# expected failures, NOT a real conformance defect: sklearn's own PLSRegression
+# has identical tuple behaviour and only passes by virtue of its name.
+_EXPECTED_FAILED_CHECKS = {
+    "check_transformer_general": (
+        "PLS.fit_transform returns the (X-scores, Y-scores) tuple like sklearn's "
+        "PLSRegression; sklearn only special-cases tuple-returning fit_transform "
+        "for its hard-coded CROSS_DECOMPOSITION class names, and 'PLS' is not one."
+    ),
+    "check_transformer_data_not_an_array": (
+        "Same cause as check_transformer_general: the tuple-returning "
+        "fit_transform is only special-cased by sklearn for its hard-coded "
+        "CROSS_DECOMPOSITION class names."
+    ),
+}
+
+
 def test_sklearn_pls_passes_check_estimator():
     """SklearnPLS conforms to the scikit-learn estimator API.
 
-    ``check_estimator`` with the default ``on_fail='raise'`` raises on the first
-    failure and is silent otherwise, so this asserts "zero failures" without
-    hard-coding pass/skip counts. With the default ``ddof=0`` the weighted
-    ``sample_weight``-equivalence check passes, so nothing is expected-fail.
+    ``check_estimator`` runs the full suite; the only expected failures are the
+    two transformer-consistency checks (see ``_EXPECTED_FAILED_CHECKS``), which
+    fail solely because ``fit_transform`` returns the ``(X-scores, Y-scores)``
+    tuple and scikit-learn special-cases tuple ``fit_transform`` only for its
+    hard-coded ``CROSS_DECOMPOSITION`` class names. With the default ``ddof=0``
+    the weighted ``sample_weight``-equivalence check passes.
     """
-    check_estimator(SklearnPLS())
+    check_estimator(SklearnPLS(), expected_failed_checks=_EXPECTED_FAILED_CHECKS)
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+@pytest.mark.parametrize("n_components", [1, 3, 5])
+def test_fit_transform_returns_xy_scores_tuple(algorithm, n_components):
+    """fit_transform returns the (X-scores, Y-scores) tuple -- matching
+    ikpls.numpy.PLS.fit_transform and sklearn's PLSRegression -- rather than
+    TransformerMixin's X-only default, and is consistent with
+    fit(...).transform(...)."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((40, 8))
+    Y = rng.standard_normal((40, 3))
+
+    out = SklearnPLS(n_components=n_components, algorithm=algorithm).fit_transform(X, Y)
+    assert isinstance(out, tuple) and len(out) == 2
+    T, U = out
+    assert T.shape == (40, n_components)
+    assert U.shape == (40, n_components)
+
+    # Consistent with fit followed by transform (the two agree to ~1e-15).
+    T2, U2 = (
+        SklearnPLS(n_components=n_components, algorithm=algorithm)
+        .fit(X, Y)
+        .transform(X, Y)
+    )
+    assert_allclose(T, T2)
+    assert_allclose(U, U2)
 
 
 def test_multi_output_tag_matches_plsregression():
@@ -86,7 +139,12 @@ def test_predict_all_components_bit_identical_to_inner(algorithm, n_components):
     )
 
 
-@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "2", None])
+# ``True`` is intentionally omitted: ``Interval(Integral, ...)`` accepts bool
+# (a ``True`` is an ``Integral`` equal to 1), matching scikit-learn's own
+# ``PLSRegression``, which likewise accepts ``n_components=True``. The other
+# values are rejected by ``_validate_params`` with an ``InvalidParameterError``
+# (a ``ValueError``).
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "2", None])
 def test_n_components_validation(bad):
     """Invalid n_components raises a clean ValueError (not a deep IndexError)."""
     rng = np.random.default_rng(0)
