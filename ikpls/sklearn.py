@@ -150,6 +150,17 @@ class PLS(
     n_features_in_ : int
         Number of features seen during :meth:`fit`.
 
+    max_stable_components_ : int
+        Number of leading, numerically stable components determined during
+        :meth:`fit` (from the inner ``ikpls.numpy.PLS.max_stable_components``).
+        Equals ``n_components`` unless a component is detected as unstable -- when an
+        X-weight norm underflows below machine epsilon (the X-Y cross-covariance is
+        exhausted) or a component's score norm ``t^T t`` collapses relative to the
+        largest score norm seen so far (a null-space direction past the numerical rank
+        of ``X``). Components past this count carry no predictive information: the
+        coefficients are carried forward, so ``predict`` with more components returns
+        the same result as with ``max_stable_components_``.
+
     Notes
     -----
     Improved Kernel PLS does not form a separate Y-weights matrix in its inner
@@ -305,6 +316,13 @@ class PLS(
         # Number of output features of transform() == number of components.
         # Consumed by ClassNamePrefixFeaturesOutMixin.get_feature_names_out.
         self._n_features_out = self.n_components_
+        # Number of leading, numerically stable components reported by the inner PLS
+        # (see ikpls.numpy.PLS.max_stable_components): the count before an X-weight
+        # norm underflowed or a component's score norm collapsed relative to the
+        # largest seen so far (a null-space direction past the numerical rank of X).
+        # Coefficients past this count are carried forward, so predicting with more
+        # components returns the same result as with max_stable_components_.
+        self.max_stable_components_ = int(inner.max_stable_components)
 
         # --- Fitted attributes mirroring sklearn.cross_decomposition.PLSRegression.
         # These are the inner PLS matrices; their shapes already follow sklearn's

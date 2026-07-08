@@ -15,7 +15,6 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
-import warnings
 from collections.abc import Callable, Hashable
 from typing import Any, Iterable, Optional, Tuple, Union
 
@@ -129,26 +128,6 @@ class PLS:
         self.Y_std = None
         self.max_stable_components = None
         self.fitted_ = False
-
-    def _weight_warning(self, i: int) -> None:
-        """
-        Warns the user that the weight is close to zero.
-
-        Parameters
-        ----------
-        i : int
-            Number of components.
-
-        Returns
-        -------
-        None.
-        """
-        warnings.warn(
-            message=f"Weight is close to zero. Results with A = {i + 1} "
-            "component(s) or higher may be unstable.",
-            category=UserWarning,
-        )
-        self.max_stable_components = i
 
     def _convert_input_to_array(
         self, arr: Optional[npt.ArrayLike]
@@ -505,8 +484,19 @@ class PLS:
             Number of components in the PLS model.
 
         max_stable_components : int
-            Maximum number of components that can be used without the residual going
-            below machine epsilon.
+            Number of leading, numerically stable components. Equals `A` unless a
+            component is detected as unstable, in which case it is the index of the
+            first such component. A component is unstable if its X-weight norm
+            underflows below machine epsilon (the X-Y cross-covariance is exhausted)
+            or if its score norm ``t^T t`` collapses relative to the largest score
+            norm seen so far (a null-space direction past the numerical rank of X).
+            Such components carry no predictive information: the regression
+            coefficients are carried forward, so `predict` with more than
+            `max_stable_components` components returns the same result as with exactly
+            `max_stable_components`. Their scores/loadings (`W`, `P`, `Q`, `R`, `T`),
+            however, are not meaningful -- zeroed here in the NumPy backend, left
+            un-normalized in the JAX backend -- so slice to `max_stable_components`
+            before comparing them across backends.
 
         B : Array of shape (A, K, M)
             PLS regression coefficients tensor.
@@ -599,7 +589,6 @@ class PLS:
         M = Y.shape[1]
 
         self.A = A
-        self.max_stable_components = A
         self.N = N
         self.K = K
         self.M = M
@@ -625,7 +614,9 @@ class PLS:
                 X = np.sqrt(sample_weight) * X
 
         # Execute Improved Kernel PLS steps 2-5 (shared with fast cross-validation).
-        self.B, W, P, Q, R, T = improved_kernel_pls_inner_loop(
+        # The inner loop reports how many leading components are numerically stable
+        # (see _stability_warning); it emits the underflow/collapse warnings itself.
+        self.B, W, P, Q, R, T, max_stable = improved_kernel_pls_inner_loop(
             self.algorithm,
             A,
             K,
@@ -635,8 +626,8 @@ class PLS:
             XTX=XTX if self.algorithm == 2 else None,
             dtype=self.dtype,
             eps=self.eps,
-            weight_warning=self._weight_warning,
         )
+        self.max_stable_components = max_stable
         self.W = W
         self.P = P
         self.Q = Q

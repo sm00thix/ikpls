@@ -47,9 +47,7 @@ jax.config.update("jax_enable_x64", True)
 # GitHub-hosted Ubuntu runners that would otherwise run out of memory. Set the
 # environment variable IKPLS_TEST_JIT=1 to run the suite WITH JIT enabled (e.g.
 # locally, where more memory is available) to exercise the compiled JAX code paths.
-jax.config.update(
-    "jax_disable_jit", os.environ.get("IKPLS_TEST_JIT", "0") != "1"
-)
+jax.config.update("jax_disable_jit", os.environ.get("IKPLS_TEST_JIT", "0") != "1")
 
 
 def test_y_weights_equal_y_loadings():
@@ -188,9 +186,9 @@ def test_scale_and_stability():
         ):
             model.fit(xx, yy, A=A)
             assert np.all(np.isfinite(np.asarray(model.W))), name
-            assert np.all(
-                np.isfinite(np.asarray(model.predict(xx, n_components=A)))
-            ), name
+            assert np.all(np.isfinite(np.asarray(model.predict(xx, n_components=A)))), (
+                name
+            )
         wrapper = SklearnPLS(n_components=A, algorithm=1, ddof=1).fit(X, Y)
         assert np.all(np.isfinite(np.asarray(wrapper.predict(X)))), name
 
@@ -305,6 +303,116 @@ def test_jax_small_magnitude_unscaled_data_matches_numpy():
         )
 
 
+@pytest.mark.parametrize(
+    "kind, A, expected",
+    [
+        # Wide p > n: centering removes one degree of freedom, so the numerical rank
+        # is n - 1 = 14 while A = min(n, p) = 15 -- one component over the rank.
+        ("wide", 15, 14),
+        # A duplicated column drops the numerical rank to 5 while A = 6.
+        ("collinear", 6, 5),
+    ],
+)
+def test_max_stable_components_detects_rank_deficiency(kind, A, expected):
+    """``max_stable_components`` must reflect the numerical rank of the (centered) X.
+
+    When ``A`` exceeds that rank the extra components are null-space directions whose
+    score norm ``t^T t`` collapses relative to the earlier components even though the
+    X-weight norm does not underflow. NumPy stops before writing them (emitting a
+    "X score norm is close to zero" warning); JAX -- which cannot ``break`` inside
+    ``lax.scan`` -- flags them with the same relative test post-hoc. Both backends and
+    both algorithms must report the same reduced count. The previous weight-norm-only
+    check silently missed this and reported ``A``.
+    """
+    rng = np.random.default_rng(0)
+    if kind == "wide":
+        X = rng.standard_normal((15, 60))
+    else:
+        X = rng.standard_normal((30, 6))
+        X[:, 5] = X[:, 0]  # exact duplicate -> rank deficient
+    Y = rng.standard_normal((X.shape[0], 1))
+    jnp_X, jnp_Y = jnp.asarray(X), jnp.asarray(Y)
+
+    # NumPy stops at the collapse and warns; it reports the numerical rank.
+    for algorithm in (1, 2):
+        with pytest.warns(UserWarning, match="X score norm is close to zero"):
+            m = NpPLS(algorithm=algorithm, ddof=1).fit(X, Y, A=A)
+        assert int(m.max_stable_components) == expected
+
+    # JAX cannot break inside lax.scan, so it is warning-free by construction; it must
+    # still report the same reduced count.
+    for jax_cls in (JAX_Alg_1, JAX_Alg_2):
+        jm = jax_cls(ddof=1).fit(jnp_X, jnp_Y, A=A)
+        assert int(jm.max_stable_components) == expected
+
+
+def test_predictions_identical_past_max_stable_components():
+    """Past ``max_stable_components`` the regression coefficients are carried forward,
+    so predictions with more components are identical to predictions with exactly
+    ``max_stable_components`` -- for both backends and algorithms. This is the
+    guarantee the underflow/collapse warning states.
+    """
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((15, 60))  # centered rank 14; A = 15 over-extracts
+    Y = rng.standard_normal((15, 1))
+    A = 15
+
+    def _assert_carry_forward(model, xx):
+        ms = int(model.max_stable_components)
+        assert ms < A
+        p_full = np.asarray(model.predict(xx, n_components=A))
+        p_ms = np.asarray(model.predict(xx, n_components=ms))
+        assert_allclose(p_full, p_ms, atol=1e-8, rtol=1e-8)
+
+    # NumPy warns at the collapse; coefficients past max_stable are carried forward.
+    for algorithm in (1, 2):
+        with pytest.warns(UserWarning, match="X score norm is close to zero"):
+            m = NpPLS(algorithm=algorithm, ddof=1).fit(X, Y, A=A)
+        _assert_carry_forward(m, X)
+
+    # JAX is warning-free by construction but carries coefficients forward identically.
+    jnp_X, jnp_Y = jnp.asarray(X), jnp.asarray(Y)
+    for jax_cls in (JAX_Alg_1, JAX_Alg_2):
+        jm = jax_cls(ddof=1).fit(jnp_X, jnp_Y, A=A)
+        _assert_carry_forward(jm, jnp_X)
+
+
+def test_numpy_jax_agree_on_non_monotonic_score_norms():
+    """NumPy and JAX must report the same ``max_stable_components`` (and matching
+    predictions) even when the per-component score norms ``tTt`` are NON-monotonic --
+    e.g. unscaled data where a high-covariance / low-X-variance component is extracted
+    before a high-X-variance one, so a later component has a far larger score norm than
+    an earlier one.
+
+    Both backends use a RUNNING (cumulative) max for the relative score-collapse
+    threshold. A global max (JAX's earlier behaviour) would flag the legitimate leading
+    component -- because a much larger score appears later -- and diverge from NumPy on
+    ``max_stable_components`` and on the carried-forward coefficients. Regression guard
+    for that cross-backend divergence.
+    """
+    kwargs = dict(center_X=False, center_Y=False, scale_X=False, scale_Y=False)
+    X = np.array([[1.0, 0.0], [0.0, 1e9]])  # tTt = [~1, ~1e18]: strongly non-monotonic
+    Y = np.array([[1.0], [1e-20]])
+    results = []
+    for model, xx, yy in (
+        (NpPLS(algorithm=1, **kwargs), X, Y),
+        (NpPLS(algorithm=2, **kwargs), X, Y),
+        (JAX_Alg_1(**kwargs), jnp.asarray(X), jnp.asarray(Y)),
+        (JAX_Alg_2(**kwargs), jnp.asarray(X), jnp.asarray(Y)),
+    ):
+        # Neither component collapses (the running max keeps the legitimate leading
+        # component), so max_stable stays 2 for every backend; the count assertion
+        # below is the guard against a regression to the global-max behaviour.
+        model.fit(xx, yy, A=2)
+        results.append(
+            (int(model.max_stable_components), np.asarray(model.predict(xx, n_components=2)))
+        )
+    counts = [r[0] for r in results]
+    assert counts == [2, 2, 2, 2], f"backends disagree on max_stable_components: {counts}"
+    for _, pred in results[1:]:
+        assert_allclose(pred, results[0][1], atol=1e-4, rtol=1e-4)
+
+
 def test_fast_cv_reused_instance_resets_stale_weights():
     """An unweighted cross_validate after a weighted one on the SAME instance must
     equal a fresh instance's result: Algorithm #1 stores sqrt-weights to weight
@@ -384,9 +492,7 @@ def test_transform_and_inverse_transform_match_sklearn():
 
     # The wrapper delegates to the native NumPy model bit-for-bit.
     assert_array_equal(T, np.asarray(np_alg_1.transform(X=X, n_components=A)))
-    assert_array_equal(
-        X_rec, np.asarray(np_alg_1.inverse_transform(T=T))
-    )
+    assert_array_equal(X_rec, np.asarray(np_alg_1.inverse_transform(T=T)))
 
     # Full rank (A == K): transform/inverse_transform round-trips X exactly for
     # ikpls and scikit-learn alike.
@@ -482,7 +588,9 @@ class TestClass:
             Weights for the spectral data.
         """
         if kind is None:
-            sample_weight = self.rng.uniform(low=0, high=3, size=self.raw_spectra.shape[0])
+            sample_weight = self.rng.uniform(
+                low=0, high=3, size=self.raw_spectra.shape[0]
+            )
             # reset the rng
             self.rng = np.random.default_rng(self.seed)
         else:
@@ -2463,9 +2571,7 @@ class TestClass:
         assert_allclose(
             sk_x_loadings_sign_flip, sk_y_loadings_sign_flip, atol=0, rtol=0
         )
-        assert_allclose(
-            sk_y_loadings_sign_flip, sk_y_weights_sign_flip, atol=0, rtol=0
-        )
+        assert_allclose(sk_y_loadings_sign_flip, sk_y_weights_sign_flip, atol=0, rtol=0)
 
         np_alg_1_x_loadings_sign_flip = np.sign(np_pls_alg_1.P / expected_x_loadings)
         np_alg_1_x_weights_sign_flip = np.sign(np_pls_alg_1.W / expected_x_weights)
@@ -2733,16 +2839,12 @@ class TestClass:
         sk_y_loadings_sign_flip = np.sign(
             sk_pls.y_loadings_[1:] / expected_y_loadings[1:]
         )
-        sk_y_weights_sign_flip = np.sign(
-            sk_pls.y_weights_[1:] / expected_y_weights[1:]
-        )
+        sk_y_weights_sign_flip = np.sign(sk_pls.y_weights_[1:] / expected_y_weights[1:])
         assert_allclose(sk_x_loadings_sign_flip, sk_x_weights_sign_flip, atol=0, rtol=0)
         assert_allclose(
             sk_x_loadings_sign_flip[1:], sk_y_loadings_sign_flip, atol=0, rtol=0
         )
-        assert_allclose(
-            sk_y_loadings_sign_flip, sk_y_weights_sign_flip, atol=0, rtol=0
-        )
+        assert_allclose(sk_y_loadings_sign_flip, sk_y_weights_sign_flip, atol=0, rtol=0)
 
         np_alg_1_x_loadings_sign_flip = np.sign(np_pls_alg_1.P / expected_x_loadings)
         np_alg_1_x_weights_sign_flip = np.sign(np_pls_alg_1.W / expected_x_weights)
@@ -2909,7 +3011,7 @@ class TestClass:
                 assert len(record) == 2
 
         elif isinstance(pls_model, FastCVPLS):
-            msg = "Weight is close to zero."
+            msg = "X weight is close to zero."
             with pytest.warns(UserWarning, match=msg) as record:
                 pls_model.cross_validate(
                     X=X,
@@ -2948,11 +3050,11 @@ class TestClass:
                 # The "weight close to zero" underflow warning must NOT be emitted by
                 # the JAX fit (other incidental numerical warnings are allowed).
                 assert not any(
-                    "Weight is close to zero" in str(w.message) for w in record
+                    "X weight is close to zero" in str(w.message) for w in record
                 )
                 assert pls_model.A > pls_model.max_stable_components
         elif isinstance(pls_model, NpPLS):
-            msg = "Weight is close to zero."
+            msg = "X weight is close to zero."
             with pytest.warns(UserWarning, match=msg) as record:
                 for _ in range(2):
                     pls_model.fit(X=X, Y=Y, A=n_components)
@@ -4458,9 +4560,7 @@ class TestClass:
         # best-RMSE comparison between implementations becomes flaky. Capping here
         # keeps every cross-validated component well-defined on all platforms.
         max_supportable_components = X.shape[0] - int(largest_split) - 1
-        n_components = min(
-            X.shape[1], int(largest_split), max_supportable_components
-        )
+        n_components = min(X.shape[1], int(largest_split), max_supportable_components)
 
         for (
             center_X,
@@ -4826,7 +4926,9 @@ class TestClass:
         sample_weight = sample_weight[::50]
         splits = splits[::50]
         assert Y.shape[1] == 1
-        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-8)
+        self.check_center_scale_combinations(
+            X, Y, sample_weight, splits, atol=0, rtol=1e-8
+        )
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4865,7 +4967,9 @@ class TestClass:
         splits = splits[::step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-7)
+        self.check_center_scale_combinations(
+            X, Y, sample_weight, splits, atol=0, rtol=1e-7
+        )
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4910,7 +5014,9 @@ class TestClass:
         splits = splits[: step_size_row * min_x_dim : step_size_row]
         assert Y.shape[1] == 1
         assert X.shape[0] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-6)
+        self.check_center_scale_combinations(
+            X, Y, sample_weight, splits, atol=0, rtol=1e-6
+        )
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -4955,7 +5061,9 @@ class TestClass:
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] < X.shape[1]
-        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-7)
+        self.check_center_scale_combinations(
+            X, Y, sample_weight, splits, atol=0, rtol=1e-7
+        )
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -5000,7 +5108,9 @@ class TestClass:
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] == X.shape[1]
-        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=3e-8)
+        self.check_center_scale_combinations(
+            X, Y, sample_weight, splits, atol=0, rtol=3e-8
+        )
 
     # JAX will issue a warning if os.fork() is called as JAX is incompatible with
     # multi-threaded code. os.fork() is called by the  other cross-validation
@@ -5047,7 +5157,9 @@ class TestClass:
         splits = splits[::50]
         assert Y.shape[1] > 1
         assert Y.shape[1] > X.shape[1]
-        self.check_center_scale_combinations(X, Y, sample_weight, splits, atol=0, rtol=1e-8)
+        self.check_center_scale_combinations(
+            X, Y, sample_weight, splits, atol=0, rtol=1e-8
+        )
 
     def check_wpls_max_components_eq_to_wls(
         self,
@@ -5831,7 +5943,7 @@ class TestClass:
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, match="Weight is close to zero"
+        "ignore", category=UserWarning, match="X weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_1(self):
         """
@@ -5868,7 +5980,7 @@ class TestClass:
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, match="Weight is close to zero"
+        "ignore", category=UserWarning, match="X weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_2_m_less_k(self):
         """
@@ -5911,7 +6023,7 @@ class TestClass:
 
     # We are probably fitting too many components here. But we do not care.
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, match="Weight is close to zero"
+        "ignore", category=UserWarning, match="X weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_2_m_eq_k(self):
         """
@@ -5953,7 +6065,7 @@ class TestClass:
         )
 
     @pytest.mark.filterwarnings(
-        "ignore", category=UserWarning, match="Weight is close to zero"
+        "ignore", category=UserWarning, match="X weight is close to zero"
     )
     def test_weighted_cross_val_with_preprocessing_pls_2_m_greater_k(self):
         """
@@ -6129,13 +6241,18 @@ class TestClass:
                     return_sk_pls=False,
                 )
             use_sk = (
-                center_X and center_Y and (scale_X == scale_Y) and (sample_weight is None)
+                center_X
+                and center_Y
+                and (scale_X == scale_Y)
+                and (sample_weight is None)
             )
 
             for nc in range(1, n_components + 1):
                 if fit_transform:
                     np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
-                        np_pls_alg_1.fit_transform(X=X, Y=Y, A=nc, sample_weight=sample_weight)
+                        np_pls_alg_1.fit_transform(
+                            X=X, Y=Y, A=nc, sample_weight=sample_weight
+                        )
                     )
                 else:
                     np_pls_alg_1_transformed_X, np_pls_alg_1_transformed_Y = (
@@ -6225,8 +6342,12 @@ class TestClass:
 
         self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
         self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6
+        )
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6
+        )
 
     def test_transform_pls_2_m_less_k(self):
         """
@@ -6259,8 +6380,12 @@ class TestClass:
 
         self.check_transform(X, Y, None, fit_transform=False, atol=5e-4, rtol=5e-4)
         self.check_transform(X, Y, None, fit_transform=True, atol=5e-4, rtol=5e-4)
-        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=5e-4, rtol=5e-4)
-        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=5e-4, rtol=5e-4)
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=False, atol=5e-4, rtol=5e-4
+        )
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=True, atol=5e-4, rtol=5e-4
+        )
 
     def test_transform_pls_2_m_eq_k(self):
         """
@@ -6293,8 +6418,12 @@ class TestClass:
 
         self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
         self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6
+        )
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6
+        )
 
     def test_transform_pls_2_m_greater_k(self):
         """
@@ -6329,8 +6458,12 @@ class TestClass:
 
         self.check_transform(X, Y, None, fit_transform=False, atol=1e-6, rtol=1e-6)
         self.check_transform(X, Y, None, fit_transform=True, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6)
-        self.check_transform(X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6)
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=False, atol=1e-6, rtol=1e-6
+        )
+        self.check_transform(
+            X, Y, sample_weight, fit_transform=True, atol=1e-6, rtol=1e-6
+        )
 
     def check_inverse_transform(self, X, Y, sample_weight, atol, rtol):
         center_Xs = [False, True]
@@ -6358,7 +6491,10 @@ class TestClass:
             )
 
             use_sk = (
-                center_X and center_Y and (scale_X == scale_Y) and (sample_weight is None)
+                center_X
+                and center_Y
+                and (scale_X == scale_Y)
+                and (sample_weight is None)
             )
 
             for nc in range(1, n_components + 1):
@@ -7294,7 +7430,9 @@ class TestClass:
                 assert riX.dtype == dtype, err_msg
                 assert riY.dtype == dtype, err_msg
 
-                T, U = model.fit_transform(X=X, Y=Y, A=n_components, sample_weight=sample_weight)
+                T, U = model.fit_transform(
+                    X=X, Y=Y, A=n_components, sample_weight=sample_weight
+                )
                 assert T.dtype == dtype, err_msg
                 assert U.dtype == dtype, err_msg
 
