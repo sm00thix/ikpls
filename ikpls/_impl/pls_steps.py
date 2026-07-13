@@ -190,7 +190,14 @@ def improved_kernel_pls_inner_loop(
             w = eig_vecs[:, -1:]
 
         # Step 3: rotation r mapping the original X to this component's score.
-        r = w - RT[:i].T @ (PT[:i] @ w)
+        if i == 0:
+            r = np.copy(w)
+        elif i == 1:
+            # Use vectorized multiplication instead of full matmul when PT[:i] and
+            # RT[:i] are vectors.
+            r = w - PT[:1] @ w * RT[:1].T
+        else:
+            r = w - RT[:i].T @ (PT[:i] @ w)
 
         # Step 4 (score norm first): tTt = ||t||^2, the value used to deflate XTY and
         # to normalize the loadings. When n_components exceeds the numerical rank of
