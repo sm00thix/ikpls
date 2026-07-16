@@ -1,6 +1,6 @@
 [project]
 name = "ikpls"
-version = "6.1.1"
+version = "6.1.2"
 description = "Improved Kernel PLS and Fast Cross-Validation."
 authors = [{ name = "sm00thix", email = "oleemail@icloud.com" }]
 maintainers = [{ name = "sm00thix", email = "oleemail@icloud.com" }]
