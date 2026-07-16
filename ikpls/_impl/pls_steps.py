@@ -230,7 +230,16 @@ def improved_kernel_pls_inner_loop(
         if M == 1:
             q = norm / tTt
         elif M < K:
-            q = q * np.sqrt(eig_vals[-1]) / tTt
+            # Fold the two scalar factors before the single array multiply. Reusing the
+            # Python float ``tTt_val`` (already materialized above for the stability
+            # guard) and precomputing ``sqrt(eig_vals[-1]) / tTt_val`` turns two array
+            # ufuncs -- a multiply and a divide by the (1, 1) array ``tTt`` -- into a
+            # single array multiply. At small M, where this update is dominated by
+            # per-call NumPy dispatch rather than arithmetic, that halves the dispatch
+            # and removes the (1, 1)-array broadcast. (``tTt_val`` is weakly typed under
+            # NEP 50, so the array dtype is preserved.) Mathematically equivalent up to
+            # floating-point reassociation.
+            q = q * (np.sqrt(eig_vals[-1]) / tTt_val)
         else:
             q = (r.T @ XTY).T / tTt
 
