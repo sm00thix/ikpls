@@ -25,7 +25,7 @@
 The `ikpls` software package provides fast and efficient tools for PLS (Partial Least Squares) modeling. This package is designed to help researchers and practitioners handle PLS modeling faster than previously possible - particularly on large datasets.
 
 ## Citation
-- If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533) and [this arXiv preprint](https://arxiv.org/abs/2607.16138).
+- If you use the `ikpls` software package for your work, please cite [this Journal of Open Source Software article](https://joss.theoj.org/papers/10.21105/joss.06533), [this arXiv preprint](https://arxiv.org/abs/2607.16138), and [the original IKPLS artcile](https://doi.org/10.1002/(SICI)1099-128X(199701)11:1%3C73::AID-CEM435%3E3.0.CO;2-%23?).
 - If you use the fast cross-validation algorithm implemented in `ikpls.fast_cross_validation`, please also cite [this Journal of Chemometrics article](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/full/10.1002/cem.70008).
 - If you use the sample weighted option in any of the above, please also cite [this European Management Journal article](https://www.sciencedirect.com/science/article/abs/pii/S0263237316300688) and [this PhD thesis](https://arxiv.org/abs/2510.13452).
 
