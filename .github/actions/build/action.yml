@@ -3,13 +3,13 @@ description: Build the package
 
 runs:
    using: "composite"
+   # The calling workflow checks out the commit to build (it must, to use this local
+   # action); checking out again here would replace it with the default ref.
    steps:
-    - uses: actions/checkout@v4
-
     - name: Install uv
-      uses: astral-sh/setup-uv@v5
+      uses: astral-sh/setup-uv@v10.3.3
       with:
-        python-version: '3.14'
+        python-version: '3.15'
 
     - name: Lint with ruff
       run: |
@@ -28,7 +28,7 @@ runs:
       shell: bash
 
     - name: Store the distribution packages
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: python-package-distributions
         path: dist/

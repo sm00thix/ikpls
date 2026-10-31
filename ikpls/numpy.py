@@ -15,7 +15,10 @@ Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
+import threading
+import weakref
 from collections.abc import Callable, Hashable
+from copy import copy as _shallow_copy
 from typing import Any, Iterable, Optional, Tuple, Union
 
 import joblib
@@ -26,6 +29,31 @@ from sklearn.exceptions import NotFittedError
 
 from ikpls._impl.pls_steps import improved_kernel_pls_inner_loop
 from ikpls._impl.r_y_mapping import _R_Y_Mapping
+
+
+# The last fold model of each instance's previous `cross_validate` call, kept outside the
+# instance so that pickling and copying instances are unaffected (see `_fresh_fold_model`).
+_CV_FOLD_MODELS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_CV_FOLD_MODELS_LOCK = threading.Lock()
+
+
+def _take_previous_fold_model(pls: "PLS") -> Optional["PLS"]:
+    try:
+        with _CV_FOLD_MODELS_LOCK:
+            return _CV_FOLD_MODELS.pop(pls, None)
+    except TypeError:  # an unhashable or not weak-referenceable (subclass) instance
+        return None
+
+
+def _keep_fold_model(pls: "PLS", model: Optional["PLS"]) -> None:
+    try:
+        with _CV_FOLD_MODELS_LOCK:
+            if model is None:
+                _CV_FOLD_MODELS.pop(pls, None)
+            else:
+                _CV_FOLD_MODELS[pls] = model
+    except TypeError:
+        pass
 
 
 class PLS:
@@ -862,6 +890,29 @@ class PLS:
         else:
             return None
 
+    def _fresh_fold_model(self) -> "PLS":
+        """
+        A shallow copy of this instance to fit folds on, so that folds running
+        concurrently in one process (joblib's threading backend) never share a model
+        and the instance itself is not fitted. A shallow copy suffices because `fit`
+        rebinds, never mutates, the fitted attributes.
+
+        The fitted arrays of the previous call's fold model (taken out of the cache, so
+        the copy is their only holder) are handed over to the copy's unfitted
+        attributes, so that `fit` releases each of them only as it rebinds that
+        attribute, as refitting `self` did before. Releasing them all at
+        once lets the allocator return their pages to the OS, which the folds then
+        have to fault back in: a measurable slowdown on repeated calls.
+        """
+        model = _shallow_copy(self)
+        previous = _take_previous_fold_model(self)
+        if previous is not None:
+            state = vars(model)
+            for name, value in vars(previous).items():
+                if isinstance(value, np.ndarray) and state.get(name, ...) is None:
+                    state[name] = value
+        return model
+
     def cross_validate(
         self,
         X: npt.ArrayLike,
@@ -990,6 +1041,14 @@ class PLS:
         -----
         This method is used to perform cross-validation on the PLS model with different
         data splits and evaluate its performance using user-defined metrics.
+
+        The folds are fitted on shallow copies of this instance, one per thread, so the
+        folds can run concurrently in one process (e.g. joblib's threading backend),
+        and the instance itself is not fitted by this method: `metric_function` and
+        `preprocessing_function` cannot read a fold's model from the instance, and
+        `predict` needs a separate call to `fit`. One fold model of the last call is
+        kept outside the instance, so that repeated calls reuse its memory; it is
+        released with the instance.
         """
         X, Y, sample_weight = self._get_input(copy=False, X=X, Y=Y, sample_weight=sample_weight)
 
@@ -1007,6 +1066,8 @@ class PLS:
             n_jobs = min(num_splits, joblib.cpu_count())
         else:
             n_jobs = min(num_splits, n_jobs)
+
+        thread_models: dict[int, "PLS"] = {}
 
         def worker(val_indices: npt.NDArray[np.int_]) -> Any:
             train_indices = np.setdiff1d(all_indices, val_indices, assume_unique=True)
@@ -1031,14 +1092,27 @@ class PLS:
                         X_train, Y_train, X_val, Y_val
                     )
 
-            self.fit(X_train, Y_train, A, weights_train)
-            Y_pred = self.predict(X_val, n_components=None)
+            # Each thread fits its own copy, reused for its later folds: folds may run
+            # concurrently in this process (joblib's threading backend), where fitting
+            # `self` would let one fold overwrite another's model between its fit and
+            # predict.
+            tid = threading.get_ident()
+            model = thread_models.get(tid)
+            if model is None:
+                model = thread_models[tid] = self._fresh_fold_model()
+            model.fit(X_train, Y_train, A, weights_train)
+            Y_pred = model.predict(X_val, n_components=None)
             if flattened_weights is not None:
                 return metric_function(Y_val, Y_pred, weights_val)
             return metric_function(Y_val, Y_pred)
 
         metrics_list = Parallel(n_jobs=n_jobs, verbose=verbose)(
             delayed(worker)(val_indices) for val_indices in folds_dict.values()
+        )
+        _keep_fold_model(
+            self,
+            thread_models.get(threading.get_ident())
+            or next(iter(thread_models.values()), None),
         )
         metrics_dict = dict(zip(folds_dict, metrics_list))
         return metrics_dict

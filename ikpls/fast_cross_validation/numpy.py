@@ -451,6 +451,10 @@ class PLS:
             ddof=self.ddof,
             dtype=self.dtype,
             copy=self.copy,
+            backend="numpy",
+            # Algorithm #1 never uses the dataset-wide X^T W X.
+            compute_XTX=self.algorithm != 1,
+            compute_XTY=True,
         )
 
         # It is important that Partitioner is not made an attribute of this
