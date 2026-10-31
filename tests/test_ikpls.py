@@ -715,7 +715,8 @@ def test_jax_fast_cv_stateless_picklable_and_follows_current_settings():
         pls = JaxFastCVPLS(algorithm=2)  # scales by default
         scaled = run(pls)
         assert not np.allclose(scaled, unscaled)
-        assert_allclose(run(pickle.loads(pickle.dumps(pls))), scaled, rtol=0, atol=0)
+        unpickled = pickle.loads(pickle.dumps(pls))  # nosec B301
+        assert_allclose(run(unpickled), scaled, rtol=0, atol=0)
         pls.cross_validate(X, Y, A, np.arange(N) % 4, _jax_mse_per_component,
                            show_progress=False)
         pickle.dumps(pls)  # also with a fitted CVMatrix

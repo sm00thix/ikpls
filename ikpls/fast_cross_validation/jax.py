@@ -58,7 +58,7 @@ import inspect
 import operator
 from collections import defaultdict
 from collections.abc import Callable, Hashable
-from typing import Any, Iterable, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -105,6 +105,42 @@ def _is_hashable(obj: Any) -> bool:
     except TypeError:
         return False
     return True
+
+
+def _validation_index_array(
+    validation_indices: ArrayLike, concrete: bool
+) -> Union[np.ndarray, jax.Array]:
+    """
+    `validation_indices` checked to be a 2-D integer array: as a NumPy array when
+    `concrete`, otherwise the tracer as given.
+    """
+    ragged_msg = (
+        "`validation_indices` must be a rectangular (n_folds, N_val) integer "
+        "array: all folds must have the same size. Use `cross_validate` for "
+        "size-imbalanced folds."
+    )
+    if concrete:
+        try:
+            vi = np.asarray(validation_indices)
+        except (ValueError, TypeError) as err:
+            raise ValueError(ragged_msg) from err
+        if vi.dtype == object:
+            raise ValueError(
+                f"{ragged_msg} Got an array of dtype object (ragged rows, or "
+                "Python objects that are not integers)."
+            )
+    else:
+        vi = validation_indices
+    if vi.ndim != 2:
+        raise ValueError(
+            "`validation_indices` must be a 2-D array of shape (n_folds, N_val); "
+            f"got shape {vi.shape}."
+        )
+    if not jnp.issubdtype(vi.dtype, jnp.integer):
+        raise ValueError(
+            f"`validation_indices` must be an integer array; got dtype {vi.dtype}."
+        )
+    return vi
 
 
 class PLS:
@@ -428,6 +464,69 @@ class PLS:
                     "sample standard deviation."
                 )
 
+    def _check_x64(self) -> None:
+        if np.dtype(self.dtype).itemsize >= 8 and not jax.config.jax_enable_x64:
+            raise ValueError(
+                f"dtype {np.dtype(self.dtype).name} requires jax_enable_x64=True at "
+                "call time (enable it before tracing); cvmatrix would otherwise toggle "
+                "the flag mid-trace."
+            )
+
+    def _check_stateless_shapes(
+        self, N: int, N_Y: int, vi_shape: Tuple[int, int]
+    ) -> None:
+        """Shape-only checks of ``stateless_cross_validate``, valid under tracing too."""
+        if N_Y != N:
+            raise ValueError(
+                f"`X` and `Y` must have the same number of rows; got {N} and {N_Y}."
+            )
+        n_folds, n_val = vi_shape
+        if n_folds == 0 or n_val == 0:
+            raise ValueError(
+                "`validation_indices` must hold at least one fold with at least one "
+                f"validation index; got shape {vi_shape}."
+            )
+        if n_val >= N:
+            raise ValueError(
+                f"Each fold's validation set (N_val={n_val}) must be smaller than the "
+                f"number of samples (N={N}) so that its training set is non-empty."
+            )
+        # Every training set has N - N_val samples (with weights, at most that many
+        # non-zero ones).
+        if (self.scale_X or self.scale_Y) and N - n_val <= self.ddof:
+            raise ValueError(
+                f"Each fold's training set has N - N_val = {N - n_val} samples, too few "
+                f"to compute the standard deviation for scaling with ddof={self.ddof}."
+            )
+
+    def _check_stateless_weights(self, sample_weight: ArrayLike, N: int) -> None:
+        w = np.asarray(sample_weight, dtype=self.dtype).ravel()
+        if w.shape[0] != N:
+            raise ValueError(
+                f"`sample_weight` must have shape (N,) = ({N},); got {w.shape}."
+            )
+        if np.any(w < 0):
+            raise ValueError("Weights must be non-negative.")
+
+    def _check_concrete_folds(
+        self, vi: np.ndarray, N: int, sample_weight: Optional[ArrayLike]
+    ) -> None:
+        """
+        Host-side rejection of out-of-range, duplicated and degenerate folds. Traced
+        indices cannot be checked; the caller is responsible for them, as for
+        cvmatrix's own deferred checks.
+        """
+        if vi.min() < 0 or vi.max() >= N:
+            raise ValueError(
+                f"`validation_indices` contains indices outside range(N) with N={N}."
+            )
+        vi_sorted = np.sort(vi, axis=1)
+        if np.any(vi_sorted[:, 1:] == vi_sorted[:, :-1]):
+            raise ValueError(
+                "Each row of `validation_indices` must hold distinct indices."
+            )
+        self._validate_folds(N, enumerate(vi), sample_weight)
+
     def stateless_cross_validate(
         self,
         X: ArrayLike,
@@ -569,92 +668,22 @@ class PLS:
         """
         if isinstance(sample_weight, jax.core.Tracer):
             raise ValueError(_TRACED_WEIGHTS_MSG)
-        if np.dtype(self.dtype).itemsize >= 8 and not jax.config.jax_enable_x64:
-            raise ValueError(
-                f"dtype {np.dtype(self.dtype).name} requires jax_enable_x64=True at "
-                "call time (enable it before tracing); cvmatrix would otherwise toggle "
-                "the flag mid-trace."
-            )
+        self._check_x64()
         A = operator.index(A)  # a static Python int, also when given as a 0-d array
         if not isinstance(X, (jax.Array, np.ndarray)):
             X = np.asarray(X)
         if not isinstance(Y, (jax.Array, np.ndarray)):
             Y = np.asarray(Y)
-        ragged_msg = (
-            "`validation_indices` must be a rectangular (n_folds, N_val) integer "
-            "array: all folds must have the same size. Use `cross_validate` for "
-            "size-imbalanced folds."
-        )
         # Decide concreteness on the argument as given: inside the caller's jax.jit,
         # jnp.asarray would stage even a closed-over NumPy array into a tracer.
         concrete = not isinstance(validation_indices, jax.core.Tracer)
-        if concrete:
-            try:
-                vi = np.asarray(validation_indices)
-            except (ValueError, TypeError) as err:
-                raise ValueError(ragged_msg) from err
-            if vi.dtype == object:
-                raise ValueError(
-                    f"{ragged_msg} Got an array of dtype object (ragged rows, or "
-                    "Python objects that are not integers)."
-                )
-        else:
-            vi = validation_indices
-        if vi.ndim != 2:
-            raise ValueError(
-                "`validation_indices` must be a 2-D array of shape (n_folds, N_val); "
-                f"got shape {vi.shape}."
-            )
-        if not jnp.issubdtype(vi.dtype, jnp.integer):
-            raise ValueError(
-                f"`validation_indices` must be an integer array; got dtype {vi.dtype}."
-            )
+        vi = _validation_index_array(validation_indices, concrete)
         N = np.shape(X)[0]
-        if np.shape(Y)[0] != N:
-            raise ValueError(
-                f"`X` and `Y` must have the same number of rows; got {N} and "
-                f"{np.shape(Y)[0]}."
-            )
-        n_folds, n_val = vi.shape
-        if n_folds == 0 or n_val == 0:
-            raise ValueError(
-                "`validation_indices` must hold at least one fold with at least one "
-                f"validation index; got shape {vi.shape}."
-            )
-        if n_val >= N:
-            raise ValueError(
-                f"Each fold's validation set (N_val={n_val}) must be smaller than the "
-                f"number of samples (N={N}) so that its training set is non-empty."
-            )
-        # Shape-only check, valid under tracing too: every training set has N - N_val
-        # samples (with weights, at most that many non-zero ones).
-        if (self.scale_X or self.scale_Y) and N - n_val <= self.ddof:
-            raise ValueError(
-                f"Each fold's training set has N - N_val = {N - n_val} samples, too few "
-                f"to compute the standard deviation for scaling with ddof={self.ddof}."
-            )
+        self._check_stateless_shapes(N, np.shape(Y)[0], vi.shape)
         if sample_weight is not None:
-            w = np.asarray(sample_weight, dtype=self.dtype).ravel()
-            if w.shape[0] != N:
-                raise ValueError(
-                    f"`sample_weight` must have shape (N,) = ({N},); got {w.shape}."
-                )
-            if np.any(w < 0):
-                raise ValueError("Weights must be non-negative.")
+            self._check_stateless_weights(sample_weight, N)
         if concrete:
-            # Reject invalid folds host-side. Traced indices cannot be checked; the
-            # caller is responsible for them, as for cvmatrix's own deferred checks.
-            if vi.min() < 0 or vi.max() >= N:
-                raise ValueError(
-                    "`validation_indices` contains indices outside range(N) with "
-                    f"N={N}."
-                )
-            vi_sorted = np.sort(vi, axis=1)
-            if np.any(vi_sorted[:, 1:] == vi_sorted[:, :-1]):
-                raise ValueError(
-                    "Each row of `validation_indices` must hold distinct indices."
-                )
-            self._validate_folds(N, enumerate(vi), sample_weight)
+            self._check_concrete_folds(vi, N, sample_weight)
         validation_indices = jnp.asarray(validation_indices)
         settings = self._settings()
         if (

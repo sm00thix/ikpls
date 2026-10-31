@@ -292,7 +292,8 @@ def test_numpy_cross_validate_reused_instance():
     assert not pls.fitted_
     kept = ikpls_numpy._CV_FOLD_MODELS.get(pls)
     assert kept is not None and kept is not pls
-    for clone in (pickle.loads(pickle.dumps(pls)), copy.copy(pls), copy.deepcopy(pls)):
+    unpickled = pickle.loads(pickle.dumps(pls))  # nosec B301
+    for clone in (unpickled, copy.copy(pls), copy.deepcopy(pls)):
         assert vars(clone).keys() == vars(pls).keys() and not clone.fitted_
         assert clone.eps == 1e-2 and clone.scale_X is False
 
@@ -348,7 +349,8 @@ def test_numpy_cross_validate_slotted_subclass():
 
     X, Y, folds = _small_cv_problem()
     pls = _ShrunkPLS(0.5, algorithm=2)
-    for clone in (pickle.loads(pickle.dumps(pls)), copy.copy(pls), copy.deepcopy(pls)):
+    unpickled = pickle.loads(pickle.dumps(pls))  # nosec B301
+    for clone in (unpickled, copy.copy(pls), copy.deepcopy(pls)):
         assert clone.shrink == 0.5
     out = pls.cross_validate(X, Y, 3, folds, _mse_per_component, n_jobs=1, verbose=0)
     ref = PLS(algorithm=2).cross_validate(
