@@ -7,16 +7,16 @@ runs:
       - name: Extract version from pyproject.toml
         id: get_version
         run: |
-          version=$(grep -o 'version = "[^"]*"' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           echo "VERSION=$version" >> $GITHUB_ENV
         shell: bash
       - name: Download all the dists
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-package-distributions
           path: dist/
       - name: Sign the dists with Sigstore
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        uses: sigstore/gh-action-sigstore-python@v3.5.0
         with:
           inputs: >-
             ./dist/*.tar.gz
@@ -27,6 +27,7 @@ runs:
         run: >-
           gh release create
           "v${{ env.VERSION }}"
+          --target "$(git rev-parse HEAD)"
           --repo "$GITHUB_REPOSITORY"
           --notes ""
         shell: bash

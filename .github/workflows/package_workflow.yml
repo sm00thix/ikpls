@@ -2,26 +2,43 @@ name: Python Package
 on:
     workflow_run:
         workflows: ["Tests"]
+        branches: [main]
         types:
             - completed
+# Build, publish and tag the commit whose Tests run passed. On workflow_run, the default
+# checkout is the newest commit on main instead, which may have been pushed after the tested
+# commit and not been tested yet. Only a successful Tests run for a push to this repository's
+# main publishes: the `branches` filter alone matches any head branch named main, e.g. a
+# fork's, should Tests ever run for pull requests.
 jobs:
     build_package:
         runs-on: ubuntu-latest
+        if: >-
+            ${{ github.event.workflow_run.conclusion == 'success'
+            && github.event.workflow_run.event == 'push'
+            && github.event.workflow_run.head_repository.full_name == github.repository }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
+              with:
+                ref: ${{ github.event.workflow_run.head_sha }}
             - uses: ./.github/actions/build
     publish_package:
         needs: build_package
         runs-on: ubuntu-latest
-        if: ${{ github.event.workflow_run.conclusion == 'success' }}
+        if: >-
+            ${{ github.event.workflow_run.conclusion == 'success'
+            && github.event.workflow_run.event == 'push'
+            && github.event.workflow_run.head_repository.full_name == github.repository }}
         environment:
             name: pypi
             url: https://pypi.org/p/ikpls
         permissions:
             id-token: write
         steps:  
-            - uses: actions/checkout@v4
-            - uses: actions/download-artifact@v4
+            - uses: actions/checkout@v7
+              with:
+                ref: ${{ github.event.workflow_run.head_sha }}
+            - uses: actions/download-artifact@v8
               with:
                 name: python-package-distributions
                 path: dist/
@@ -37,6 +54,8 @@ jobs:
             contents: write
             id-token: write
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
+              with:
+                ref: ${{ github.event.workflow_run.head_sha }}
             - uses: ./.github/actions/release
 

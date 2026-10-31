@@ -439,6 +439,519 @@ def test_fast_cv_reused_instance_resets_stale_weights():
         assert_allclose(reused_res[key], fresh_res[key], atol=0, rtol=0)
 
 
+def _jax_mse_per_component(Y_true, Y_pred, weights=None):
+    """JAX-traceable per-component (A, M) MSE, optionally sample-weighted."""
+    sq = (Y_true - Y_pred) ** 2
+    if weights is None:
+        return jnp.mean(sq, axis=-2)
+    return jnp.sum(weights[:, None] * sq, axis=-2) / jnp.sum(weights)
+
+
+def _np_mse_per_component(Y_true, Y_pred, weights=None):
+    sq = (Y_true - Y_pred) ** 2
+    if weights is None:
+        return np.mean(sq, axis=-2)
+    return np.sum(weights[:, None] * sq, axis=-2) / np.sum(weights)
+
+
+def _labels_from_val_idx(val_idx, N):
+    labels = np.empty(N, dtype=int)
+    for f in range(val_idx.shape[0]):
+        labels[val_idx[f]] = f
+    return labels
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+@pytest.mark.parametrize("center, scale", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("weighted", [False, True])
+def test_jax_fast_cv_stateless_matches_cross_validate(algorithm, center, scale, weighted):
+    """`stateless_cross_validate` (equal-size folds as a 2-D index array, stacked
+    result) must agree with `cross_validate` (fold labels, dict result) fold-for-fold
+    up to round-off -- they share the per-fold function -- and both must agree with the
+    NumPy fast CV. A size-1 `jax.vmap` (which traces regardless of the module's
+    jit-disabled default) is covered too, and, unweighted, a `jax.jit` call (which
+    compiles only with IKPLS_TEST_JIT=1). The stateless call must leave the instance
+    untouched."""
+    rng = np.random.default_rng(1)
+    N, K, M, A, n_folds = 60, 12, 2, 6, 6
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    folds = rng.permutation(N) % n_folds
+    val_idx = np.stack([np.flatnonzero(folds == f) for f in range(n_folds)])
+    sample_weight = rng.uniform(0.5, 2.0, size=N) if weighted else None
+    kwargs = dict(center_X=center, center_Y=center, scale_X=scale, scale_Y=scale)
+
+    jax_fcv = JaxFastCVPLS(algorithm=algorithm, **kwargs)
+    ref = jax_fcv.cross_validate(
+        X, Y, A, folds, _jax_mse_per_component, sample_weight=sample_weight,
+        show_progress=False,
+    )
+    ref = np.stack([np.asarray(ref[f]) for f in range(n_folds)])  # (n_folds, A, M)
+    cvm_from_cross_validate = jax_fcv._cvm
+    stateless = np.asarray(
+        jax_fcv.stateless_cross_validate(
+            X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sample_weight
+        )
+    )
+    assert stateless.shape == (n_folds, A, M)
+    assert_allclose(stateless, ref, rtol=1e-10, atol=1e-12)
+    # Nothing is stored on the instance by the stateless call (cross_validate did set
+    # the attributes; the stateless call must not have replaced them with its own).
+    assert jax_fcv._cvm is cvm_from_cross_validate and jax_fcv.A == A
+    fresh = JaxFastCVPLS(algorithm=algorithm, **kwargs)
+    fresh.stateless_cross_validate(
+        X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sample_weight
+    )
+    assert fresh._cvm is None and fresh.A is None and fresh.N is None
+
+    np_res = FastCVPLS(algorithm=algorithm, **kwargs).cross_validate(
+        X, Y, A, folds, _np_mse_per_component, sample_weight=sample_weight,
+        n_jobs=1, verbose=0,
+    )
+    assert_allclose(
+        stateless, np.stack([np_res[f] for f in range(n_folds)]), rtol=1e-8, atol=1e-10
+    )
+
+    # Traced X/Y (and, unweighted, traced indices) via a size-1 vmap; a shared concrete
+    # weight vector closed over under a plain vmap is supported.
+    if weighted:
+        vmapped = jax.vmap(
+            lambda x, y: jax_fcv.stateless_cross_validate(
+                x, y, A, val_idx, _jax_mse_per_component, sample_weight=sample_weight
+            )
+        )(X[None], Y[None])
+    else:
+        vmapped = jax.vmap(
+            lambda x, y, vi: jax_fcv.stateless_cross_validate(
+                x, y, A, vi, _jax_mse_per_component
+            )
+        )(X[None], Y[None], val_idx[None])
+    assert_allclose(np.asarray(vmapped)[0], ref, rtol=1e-10, atol=1e-12)
+    if not weighted:
+        jitted = jax.jit(
+            lambda x, y, vi: jax_fcv.stateless_cross_validate(
+                x, y, A, vi, _jax_mse_per_component
+            )
+        )
+        assert_allclose(np.asarray(jitted(X, Y, val_idx)), ref, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+@pytest.mark.parametrize("center, scale", [(True, False), (True, True)])
+def test_jax_fast_cv_stateless_vmap_over_datasets(algorithm, center, scale):
+    """jax.vmap of `stateless_cross_validate` over a stack of independent datasets
+    (each with its own random equal-size folds, int32 indices, a dict-valued metric)
+    must reproduce a Python loop of `cross_validate` over the datasets, and the NumPy
+    fast CV serves as an independent oracle for the first dataset."""
+    rng = np.random.default_rng(2)
+    B, N, K, M, A, n_folds = 5, 40, 9, 2, 4, 5
+    Xs = rng.standard_normal((B, N, K))
+    Ys = rng.standard_normal((B, N, M))
+    val_idx = np.stack(
+        [rng.permutation(N).reshape(n_folds, -1) for _ in range(B)]
+    ).astype(np.int32)
+    kwargs = dict(center_X=center, center_Y=center, scale_X=scale, scale_Y=scale)
+    jax_fcv = JaxFastCVPLS(algorithm=algorithm, **kwargs)
+
+    def dict_metric(Y_true, Y_pred):
+        return {"mse": _jax_mse_per_component(Y_true, Y_pred), "n": Y_true.shape[0]}
+
+    batched = jax.jit(
+        jax.vmap(
+            lambda x, y, vi: jax_fcv.stateless_cross_validate(x, y, A, vi, dict_metric)
+        )
+    )
+    out = batched(Xs, Ys, val_idx)
+    assert set(out) == {"mse", "n"}
+    mse = np.asarray(out["mse"])
+    assert mse.shape == (B, n_folds, A, M)
+    assert np.asarray(out["n"]).shape == (B, n_folds)
+    assert (np.asarray(out["n"]) == N // n_folds).all()
+    for b in range(B):
+        labels = _labels_from_val_idx(val_idx[b], N)
+        ref = jax_fcv.cross_validate(
+            Xs[b], Ys[b], A, labels, _jax_mse_per_component, show_progress=False
+        )
+        ref = np.stack([np.asarray(ref[f]) for f in range(n_folds)])
+        assert_allclose(mse[b], ref, rtol=1e-10, atol=1e-12)
+    np_res = FastCVPLS(algorithm=algorithm, **kwargs).cross_validate(
+        Xs[0], Ys[0], A, _labels_from_val_idx(val_idx[0], N), _np_mse_per_component,
+        n_jobs=1, verbose=0,
+    )
+    assert_allclose(
+        mse[0], np.stack([np_res[f] for f in range(n_folds)]), rtol=1e-8, atol=1e-10
+    )
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+def test_jax_fast_cv_stateless_1d_y_and_loo_match_numpy(algorithm):
+    """1-D `Y` and leave-one-out (N_val = 1) equal-size folds match the NumPy fast CV."""
+    rng = np.random.default_rng(5)
+    N, K, A = 14, 6, 3
+    X = rng.standard_normal((N, K))
+    y = rng.standard_normal(N)
+    val_idx = np.arange(N)[:, None]  # LOO: N folds of one sample
+    jax_fcv = JaxFastCVPLS(algorithm=algorithm)
+    out = np.asarray(jax_fcv.stateless_cross_validate(X, y, A, val_idx, _jax_mse_per_component))
+    assert out.shape == (N, A, 1)
+    np_res = FastCVPLS(algorithm=algorithm).cross_validate(
+        X, y, A, np.arange(N), _np_mse_per_component, n_jobs=1, verbose=0
+    )
+    assert_allclose(out, np.stack([np_res[f] for f in range(N)]), rtol=1e-8, atol=1e-10)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("center, scale", [(True, True), (False, False)])
+def test_jax_fast_cv_cross_validate_alg1_imbalanced_folds_matches_numpy(weighted, center, scale):
+    """Algorithm #1 gathers each fold's training rows and sqrt-weights by the fold's
+    training indices; size-imbalanced folds exercise one vmap group per size and must
+    match the NumPy fast CV."""
+    rng = np.random.default_rng(3)
+    N, K, M, A = 60, 12, 2, 5
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    folds = np.array([0] * 7 + [1] * 13 + [2] * 40)
+    sample_weight = None
+    if weighted:
+        sample_weight = rng.uniform(0.5, 2.0, size=N)
+        sample_weight[[3, 20, 41]] = 0.0
+    kwargs = dict(center_X=center, center_Y=center, scale_X=scale, scale_Y=scale)
+    jax_res = JaxFastCVPLS(algorithm=1, **kwargs).cross_validate(
+        X, Y, A, folds, _jax_mse_per_component, sample_weight=sample_weight,
+        show_progress=False,
+    )
+    np_res = FastCVPLS(algorithm=1, **kwargs).cross_validate(
+        X, Y, A, folds, _np_mse_per_component, sample_weight=sample_weight,
+        n_jobs=1, verbose=0,
+    )
+    assert set(jax_res) == set(np_res) == {0, 1, 2}
+    for f in np_res:
+        assert_allclose(np.asarray(jax_res[f]), np_res[f], rtol=1e-8, atol=1e-10)
+
+
+def test_jax_fast_cv_reused_instance_has_no_stale_state():
+    """A weighted `cross_validate` (Algorithm #1 sqrt-weights its gathered training
+    rows) followed by an unweighted `stateless_cross_validate` and `cross_validate` on
+    the SAME instance must equal a fresh instance's results."""
+    rng = np.random.default_rng(6)
+    N, K, M, A, n_folds = 40, 8, 2, 3, 4
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    folds = np.arange(N) % n_folds
+    val_idx = np.stack([np.flatnonzero(folds == f) for f in range(n_folds)])
+    w = rng.uniform(0.5, 2.0, size=N)
+    reused = JaxFastCVPLS(algorithm=1)
+    reused.cross_validate(X, Y, A, folds, _jax_mse_per_component, sample_weight=w, show_progress=False)
+    reused_stateless = np.asarray(
+        reused.stateless_cross_validate(X, Y, A, val_idx, _jax_mse_per_component)
+    )
+    reused_cv = reused.cross_validate(X, Y, A, folds, _jax_mse_per_component, show_progress=False)
+    fresh = JaxFastCVPLS(algorithm=1)
+    fresh_cv = fresh.cross_validate(X, Y, A, folds, _jax_mse_per_component, show_progress=False)
+    for f in range(n_folds):
+        assert_allclose(reused_stateless[f], np.asarray(fresh_cv[f]), rtol=1e-10, atol=1e-12)
+        assert_allclose(np.asarray(reused_cv[f]), np.asarray(fresh_cv[f]), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("center, scale", [(True, False), (True, True)])
+def test_fast_cv_alg1_does_not_form_xtx(weighted, center, scale):
+    """Fast cross-validation with Algorithm #1 downdates only X^T W Y and the statistics,
+    so neither backend forms the dataset-wide (K, K) X^T W X; results still match the
+    ordinary (non-fast) NumPy cross-validation."""
+    rng = np.random.default_rng(7)
+    N, K, M, A, n_folds = 30, 50, 2, 4, 5
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    folds = np.arange(N) % n_folds
+    sample_weight = rng.uniform(0.5, 2.0, size=N) if weighted else None
+    kwargs = dict(center_X=center, center_Y=center, scale_X=scale, scale_Y=scale)
+    ref = NpPLS(algorithm=1, **kwargs).cross_validate(
+        X, Y, A, folds, _np_mse_per_component, sample_weight=sample_weight, n_jobs=1, verbose=0
+    )
+    np_fcv = FastCVPLS(algorithm=1, **kwargs)
+    np_res = np_fcv.cross_validate(
+        X, Y, A, folds, _np_mse_per_component, sample_weight=sample_weight, n_jobs=1, verbose=0
+    )
+    jax_fcv = JaxFastCVPLS(algorithm=1, **kwargs)
+    jax_res = jax_fcv.cross_validate(
+        X, Y, A, folds, _jax_mse_per_component, sample_weight=sample_weight,
+        show_progress=False,
+    )
+    assert np_fcv.cvm.XTX is None
+    assert jax_fcv._cvm.XTX is None
+    for f in range(n_folds):
+        assert_allclose(np_res[f], ref[f], rtol=1e-8, atol=1e-10)
+        assert_allclose(np.asarray(jax_res[f]), ref[f], rtol=1e-8, atol=1e-10)
+    # Algorithm #2 still forms (and needs) X^T W X.
+    np_fcv2 = FastCVPLS(algorithm=2, **kwargs)
+    np_fcv2.cross_validate(
+        X, Y, A, folds, _np_mse_per_component, sample_weight=sample_weight, n_jobs=1, verbose=0
+    )
+    assert np_fcv2.cvm.XTX is not None and np_fcv2.cvm.XTX.shape == (K, K)
+
+
+def test_jax_fast_cv_stateless_picklable_and_follows_current_settings():
+    """The internally compiled `stateless_cross_validate` is keyed by the instance's
+    settings, not the instance: instances (fitted or not) pickle and deep-copy, and a
+    copy or an instance whose settings change after a call uses the new settings. JIT
+    is forced on, since this test module disables it by default."""
+    import copy
+    import pickle
+
+    rng = np.random.default_rng(9)
+    N, K, M, A = 40, 6, 1, 3
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    val_idx = rng.permutation(N).reshape(4, -1)
+    with jax.disable_jit(False):
+
+        def run(pls):
+            return np.asarray(
+                pls.stateless_cross_validate(X, Y, A, val_idx, _jax_mse_per_component)
+            )
+
+        unscaled = run(JaxFastCVPLS(algorithm=2, scale_X=False, scale_Y=False))
+        pls = JaxFastCVPLS(algorithm=2)  # scales by default
+        scaled = run(pls)
+        assert not np.allclose(scaled, unscaled)
+        unpickled = pickle.loads(pickle.dumps(pls))  # nosec B301
+        assert_allclose(run(unpickled), scaled, rtol=0, atol=0)
+        pls.cross_validate(X, Y, A, np.arange(N) % 4, _jax_mse_per_component,
+                           show_progress=False)
+        pickle.dumps(pls)  # also with a fitted CVMatrix
+        for clone in (copy.copy(pls), copy.deepcopy(pls)):
+            clone.scale_X = clone.scale_Y = False
+            assert_allclose(run(clone), unscaled, rtol=1e-12, atol=1e-14)
+        pls.scale_X = pls.scale_Y = False  # changed after a call
+        assert_allclose(run(pls), unscaled, rtol=1e-12, atol=1e-14)
+
+
+def test_jax_fast_cv_stateless_checks_closed_over_indices_under_jit():
+    """Indices closed over inside the caller's jax.jit are concrete and must still be
+    validated host-side (jnp.asarray would stage them into a tracer), and valid ones
+    must give the eager result. JIT is forced on."""
+    rng = np.random.default_rng(10)
+    N, K, M, A = 40, 6, 1, 3
+    X = rng.standard_normal((1, N, K))
+    Y = rng.standard_normal((1, N, M))
+    val_idx = rng.permutation(N).reshape(4, -1)
+    jax_fcv = JaxFastCVPLS(algorithm=2)
+    out_of_range = val_idx.copy()
+    out_of_range[0, 0] = N
+    duplicate = val_idx.copy()
+    duplicate[0, 1] = duplicate[0, 0]
+    with jax.disable_jit(False):
+        for bad, fragment in ((out_of_range, "outside"), (duplicate, "distinct")):
+            with pytest.raises(ValueError, match=fragment):
+                jax.jit(
+                    jax.vmap(
+                        lambda x, y, bad=bad: jax_fcv.stateless_cross_validate(
+                            x, y, A, bad, _jax_mse_per_component
+                        )
+                    )
+                )(X, Y)
+        jitted = jax.jit(
+            jax.vmap(
+                lambda x, y: jax_fcv.stateless_cross_validate(
+                    x, y, A, val_idx, _jax_mse_per_component
+                )
+            )
+        )(X, Y)
+        eager = jax_fcv.stateless_cross_validate(
+            X[0], Y[0], A, val_idx, _jax_mse_per_component
+        )
+    assert_allclose(np.asarray(jitted)[0], np.asarray(eager), rtol=1e-10, atol=1e-12)
+
+
+def test_jax_fast_cv_stateless_unhashable_metric():
+    """An unhashable metric callable cannot key the internal compilation cache; it
+    runs un-jitted and gives the same result."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Metric:  # dataclasses with eq=True are unhashable
+        def __call__(self, Y_true, Y_pred):
+            return _jax_mse_per_component(Y_true, Y_pred)
+
+    rng = np.random.default_rng(11)
+    N, K, M, A = 40, 6, 2, 3
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    val_idx = rng.permutation(N).reshape(4, -1)
+    jax_fcv = JaxFastCVPLS(algorithm=1)
+    with jax.disable_jit(False):
+        out = jax_fcv.stateless_cross_validate(X, Y, A, val_idx, Metric())
+        ref = jax_fcv.stateless_cross_validate(X, Y, A, val_idx, _jax_mse_per_component)
+    assert_allclose(np.asarray(out), np.asarray(ref), rtol=1e-12, atol=1e-14)
+
+
+class _ShrunkJaxFastCVPLS(JaxFastCVPLS):
+    """A subclass with an extra constructor argument that changes predictions."""
+
+    def __init__(self, shrink=0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.shrink = shrink
+
+    def _predict_on_val(self, *args):
+        return (1 - self.shrink) * super()._predict_on_val(*args)
+
+
+class _ListArgJaxFastCVPLS(JaxFastCVPLS):
+    """A subclass with an unhashable constructor argument."""
+
+    def __init__(self, tags=(), **kwargs):
+        super().__init__(**kwargs)
+        self.tags = list(tags)
+
+
+def _small_jax_problem(seed=13, N=40, K=6, M=1, n_folds=4):
+    rng = np.random.default_rng(seed)
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    val_idx = rng.permutation(N).reshape(n_folds, -1)
+    labels = np.empty(N, dtype=int)
+    for f in range(n_folds):
+        labels[val_idx[f]] = f
+    return X, Y, val_idx, labels, rng.uniform(0.5, 2.0, size=N)
+
+
+def test_jax_fast_cv_stateless_subclass_and_changed_settings():
+    """The internally compiled path rebuilds the instance from all its constructor
+    arguments, so a subclass's own arguments take effect, and every path (compiled,
+    un-jitted weighted, and `cross_validate`) honours an `algorithm` changed after
+    construction. JIT is forced on."""
+    X, Y, val_idx, labels, w = _small_jax_problem()
+    A = 3
+    with jax.disable_jit(False):
+        shrunk = _ShrunkJaxFastCVPLS(0.5, algorithm=2)
+        compiled = np.asarray(
+            shrunk.stateless_cross_validate(X, Y, A, val_idx, _jax_mse_per_component)
+        )
+        via_cv = shrunk.cross_validate(
+            X, Y, A, labels, _jax_mse_per_component, show_progress=False
+        )
+        plain = JaxFastCVPLS(algorithm=2).stateless_cross_validate(
+            X, Y, A, val_idx, _jax_mse_per_component
+        )
+        assert not np.allclose(compiled, np.asarray(plain))
+        for f in range(4):
+            assert_allclose(compiled[f], np.asarray(via_cv[f]), rtol=1e-10, atol=1e-12)
+
+        changed = JaxFastCVPLS(algorithm=1)
+        changed.algorithm = 2
+        fresh = JaxFastCVPLS(algorithm=2)
+        for sw in (None, w):
+            a = changed.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sw
+            )
+            b = fresh.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sw
+            )
+            assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-10, atol=1e-12)
+        a = changed.cross_validate(
+            X, Y, A, labels, _jax_mse_per_component, show_progress=False
+        )
+        b = fresh.cross_validate(X, Y, A, labels, _jax_mse_per_component, show_progress=False)
+        for f in range(4):
+            assert_allclose(np.asarray(a[f]), np.asarray(b[f]), rtol=1e-10, atol=1e-12)
+
+
+def test_jax_fast_cv_stateless_compile_cache_is_bounded_and_inputs_are_lenient():
+    """The internal compile cache keeps only the most recently used metric functions
+    (a new one per call must not be retained forever), and an instance with an
+    unhashable constructor argument (which cannot key the cache) runs un-jitted."""
+    import gc
+    import weakref
+
+    import ikpls.fast_cross_validation.jax as jax_fcv_module
+
+    X, Y, val_idx, _, _ = _small_jax_problem()
+    pls = JaxFastCVPLS(algorithm=2)
+    maxsize = jax_fcv_module._compiled_stateless_body.cache_info().maxsize
+    refs = []
+    with jax.disable_jit(False):
+        for _ in range(maxsize + 5):
+            def metric(Y_true, Y_pred):
+                return _jax_mse_per_component(Y_true, Y_pred)
+
+            refs.append(weakref.ref(metric))
+            pls.stateless_cross_validate(X, Y, 3, val_idx, metric)
+            del metric
+        gc.collect()
+        assert sum(r() is not None for r in refs) <= maxsize
+
+        ref = np.asarray(
+            pls.stateless_cross_validate(X, Y, 3, val_idx, _jax_mse_per_component)
+        )
+        unhashable = _ListArgJaxFastCVPLS(tags=["a", "b"], algorithm=2)
+        out = unhashable.stateless_cross_validate(X, Y, 3, val_idx, _jax_mse_per_component)
+        assert_allclose(np.asarray(out), ref, rtol=1e-12, atol=1e-14)
+
+
+def test_jax_fast_cv_stateless_rejects_invalid_inputs():
+    rng = np.random.default_rng(4)
+    N, K, M, A = 30, 6, 1, 3
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    val_idx = rng.permutation(N).reshape(5, -1)
+    jax_fcv = JaxFastCVPLS(algorithm=2)
+    with pytest.raises(ValueError, match="same number of rows"):
+        jax_fcv.stateless_cross_validate(X, Y[:-2], A, val_idx, _jax_mse_per_component)
+    cases = [
+        (val_idx[0], "2-D"),  # 1-D
+        (val_idx.astype(float), "integer"),  # non-integer dtype
+        (np.arange(N)[None, :], "smaller"),  # N_val == N -> empty training set
+        (np.zeros((3, 0), dtype=int), "at least one"),  # empty validation sets
+        (np.zeros((0, 5), dtype=int), "at least one"),  # no folds
+        (np.array([[0, 1, 2], [3, 4]], dtype=object), "rectangular"),  # ragged folds
+        (np.array([[0, 0, 1]]), "distinct"),  # duplicate within a row
+        (np.array([[0, 1, N]]), "outside"),  # out of range
+    ]
+    for bad, fragment in cases:
+        with pytest.raises(ValueError, match=fragment):
+            jax_fcv.stateless_cross_validate(X, Y, A, bad, _jax_mse_per_component)
+    w = rng.uniform(0.5, 2.0, size=N)
+    # A traced sample_weight is rejected with an explicit message (jax.vmap always
+    # traces, unlike jax.jit, which this test module disables by default).
+    with pytest.raises(ValueError, match="sample_weight"):
+        jax.vmap(
+            lambda sw: jax_fcv.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sw
+            )
+        )(w[None])
+    # A concrete sample_weight closed over under jax.jit is staged into a tracer inside
+    # cvmatrix; that too must surface as the explicit ValueError (jit forced on here).
+    with jax.disable_jit(False):
+        with pytest.raises(ValueError, match="sample_weight"):
+            jax.jit(
+                lambda x, y, vi: jax_fcv.stateless_cross_validate(
+                    x, y, A, vi, _jax_mse_per_component, sample_weight=w
+                )
+            )(X, Y, val_idx)
+    # Negative weights and a wrong weight length are rejected host-side.
+    with pytest.raises(ValueError, match="non-negative"):
+        jax_fcv.stateless_cross_validate(
+            X, Y, A, val_idx, _jax_mse_per_component, sample_weight=-w
+        )
+    with pytest.raises(ValueError, match="shape"):
+        jax_fcv.stateless_cross_validate(
+            X, Y, A, val_idx, _jax_mse_per_component, sample_weight=w[:-1]
+        )
+    # Degenerate folds (too few training samples for the std with this ddof) are
+    # rejected eagerly AND under tracing (the check depends on shapes only).
+    degenerate = JaxFastCVPLS(algorithm=2, scale_X=True, ddof=5)
+    vi8 = np.arange(8).reshape(2, 4)
+    with pytest.raises(ValueError, match="ddof"):
+        degenerate.stateless_cross_validate(X[:8], Y[:8], 2, vi8, _jax_mse_per_component)
+    with pytest.raises(ValueError, match="ddof"):
+        jax.vmap(
+            lambda x, y, vi: degenerate.stateless_cross_validate(
+                x, y, 2, vi, _jax_mse_per_component
+            )
+        )(X[None, :8], Y[None, :8], vi8[None])
+
+
 def test_transform_and_inverse_transform_match_sklearn():
     """transform (X- and Y-scores) and inverse_transform of every implementation
     -- NumPy and JAX Algorithms #1/#2 and the ikpls.sklearn.PLS wrapper -- match

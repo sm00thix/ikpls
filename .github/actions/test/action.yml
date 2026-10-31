@@ -14,18 +14,41 @@ runs:
   using: "composite"
   steps:
     - name: Install uv
-      uses: astral-sh/setup-uv@v5
+      uses: astral-sh/setup-uv@v10.3.3
       with:
         python-version: ${{ inputs.PYTHON_VERSION }}
 
     - name: Install project dependencies (with JAX)
       if: ${{ inputs.INSTALL_JAX == 'true' }}
-      run: uv sync --extra jax --group dev
+      run: uv sync --locked --extra jax --group dev
       shell: bash
 
     - name: Install project dependencies (without JAX)
       if: ${{ inputs.INSTALL_JAX != 'true' }}
-      run: uv sync --group dev
+      run: uv sync --locked --group dev
+      shell: bash
+
+    # On free-threaded Python (e.g. 3.15t), importing an extension module that does not
+    # support free threading re-enables the GIL with only a RuntimeWarning, and the tests
+    # would then pass without exercising free threading. Fail early if a test dependency
+    # re-enables it; tests/conftest.py also fails the run if it happens during the tests.
+    - name: Check that the GIL stays disabled (free-threaded Python only)
+      if: ${{ endsWith(inputs.PYTHON_VERSION, 't') }}
+      run: |
+        uv run python - <<'EOF'
+        import importlib.util
+        import sys
+
+        import coverage, cvmatrix, joblib, numpy, pandas, pytest, scipy, sklearn  # noqa: E401, F401
+        import threadpoolctl, typeguard  # noqa: E401, F401
+        import ikpls.fast_cross_validation.numpy, ikpls.numpy, ikpls.sklearn  # noqa: E401, F401
+
+        if importlib.util.find_spec("jax") is not None:
+            import ikpls.fast_cross_validation.jax, ikpls.jax, jax.numpy  # noqa: E401, F401
+        if sys._is_gil_enabled():
+            sys.exit("The GIL was re-enabled by an imported extension module.")
+        print("The GIL stays disabled with all test dependencies imported.")
+        EOF
       shell: bash
 
     - name: Run full tests (with JAX)
