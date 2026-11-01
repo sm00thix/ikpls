@@ -313,16 +313,16 @@ wheels = [
 
 [[package]]
 name = "cvmatrix"
-version = "3.3.0"
+version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/09/0e/d4422eae42b41c169f96c75b8f7c6ffb886d7bfdced3bba1e889c1d5011b/cvmatrix-3.3.0.tar.gz", hash = "sha256:e54148817e90c3d1447fbc898f93342a10d8f7086dafe756bbdbee31e1780ddf", size = 643196, upload-time = "2026-10-31T00:03:25.584Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/1d/337c449fcc4ba6d54f2505a1ce4cdbb0521f89692eaabc2c7660d4c1d96c/cvmatrix-3.4.0.tar.gz", hash = "sha256:428e5f566afc971b135f2ada265b0b10c3f56cedcf7961bb21fcad8b2b5cdbef", size = 653624, upload-time = "2026-11-01T10:08:20.041Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/59/4e74e75171d06b968bdf5fa3a000af35207e640903d469e8c41621f7035e/cvmatrix-3.3.0-py3-none-any.whl", hash = "sha256:3b9a97e25ff9940041870be0459196cb72def5a2799c44b5196785a24725cc06", size = 22027, upload-time = "2026-10-31T00:03:24.042Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/74/1a73a4b48eb472472024ade268e3f44a8a33555f4341ee00baf953c58ff3/cvmatrix-3.4.0-py3-none-any.whl", hash = "sha256:a5b42eff04f5c4906558a47fc765847fdfe30213999dfdd84724f71e07792b16", size = 26392, upload-time = "2026-11-01T10:08:18.636Z" },
 ]
 
 [package.optional-dependencies]
@@ -346,7 +346,7 @@ wheels = [
 
 [[package]]
 name = "ikpls"
-version = "6.2.0"
+version = "6.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "cvmatrix" },
@@ -382,8 +382,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvmatrix", specifier = ">=3.3.0" },
-    { name = "cvmatrix", extras = ["jax"], marker = "extra == 'jax'", specifier = ">=3.3.0" },
+    { name = "cvmatrix", specifier = ">=3.4.0" },
+    { name = "cvmatrix", extras = ["jax"], marker = "extra == 'jax'", specifier = ">=3.4.0" },
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.5.0" },
     { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.5.0" },
     { name = "joblib", specifier = ">=1.3.2" },

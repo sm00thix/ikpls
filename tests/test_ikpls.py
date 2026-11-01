@@ -912,32 +912,31 @@ def test_jax_fast_cv_stateless_rejects_invalid_inputs():
         with pytest.raises(ValueError, match=fragment):
             jax_fcv.stateless_cross_validate(X, Y, A, bad, _jax_mse_per_component)
     w = rng.uniform(0.5, 2.0, size=N)
-    # A traced sample_weight is rejected with an explicit message (jax.vmap always
-    # traces, unlike jax.jit, which this test module disables by default).
-    with pytest.raises(ValueError, match="sample_weight"):
-        jax.vmap(
-            lambda sw: jax_fcv.stateless_cross_validate(
-                X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sw
-            )
-        )(w[None])
-    # A concrete sample_weight closed over under jax.jit is staged into a tracer inside
-    # cvmatrix; that too must surface as the explicit ValueError (jit forced on here).
-    with jax.disable_jit(False):
-        with pytest.raises(ValueError, match="sample_weight"):
-            jax.jit(
-                lambda x, y, vi: jax_fcv.stateless_cross_validate(
-                    x, y, A, vi, _jax_mse_per_component, sample_weight=w
-                )
-            )(X, Y, val_idx)
-    # Negative weights and a wrong weight length are rejected host-side.
+    # Negative weights are rejected host-side, also when closed over inside the
+    # caller's jax.jit, where they are still concrete NumPy arrays (jit forced on here).
     with pytest.raises(ValueError, match="non-negative"):
         jax_fcv.stateless_cross_validate(
             X, Y, A, val_idx, _jax_mse_per_component, sample_weight=-w
         )
+    with jax.disable_jit(False):
+        with pytest.raises(ValueError, match="non-negative"):
+            jax.jit(
+                lambda x, y, vi: jax_fcv.stateless_cross_validate(
+                    x, y, A, vi, _jax_mse_per_component, sample_weight=-w
+                )
+            )(X, Y, val_idx)
+    # A wrong weight shape is rejected, also when the weights are traced.
+    for bad_w in (w[:-1], w[None]):
+        with pytest.raises(ValueError, match="shape"):
+            jax_fcv.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, sample_weight=bad_w
+            )
     with pytest.raises(ValueError, match="shape"):
-        jax_fcv.stateless_cross_validate(
-            X, Y, A, val_idx, _jax_mse_per_component, sample_weight=w[:-1]
-        )
+        jax.vmap(
+            lambda sw: jax_fcv.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, sample_weight=sw
+            )
+        )(w[None, :-1])
     # Degenerate folds (too few training samples for the std with this ddof) are
     # rejected eagerly AND under tracing (the check depends on shapes only).
     degenerate = JaxFastCVPLS(algorithm=2, scale_X=True, ddof=5)
@@ -950,6 +949,204 @@ def test_jax_fast_cv_stateless_rejects_invalid_inputs():
                 x, y, 2, vi, _jax_mse_per_component
             )
         )(X[None, :8], Y[None, :8], vi8[None])
+
+
+def _per_dataset_problem(seed=21, B=4, N=40, K=7, M=2, n_folds=5):
+    """Datasets with their own folds and weights, some of them zero."""
+    rng = np.random.default_rng(seed)
+    X = rng.standard_normal((B, N, K))
+    Y = rng.standard_normal((B, N, M))
+    val_idx = np.stack([rng.permutation(N).reshape(n_folds, -1) for _ in range(B)])
+    W = rng.uniform(0.2, 2.0, size=(B, N))
+    W[rng.random((B, N)) < 0.15] = 0.0
+    return X, Y, val_idx, W
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+@pytest.mark.parametrize("center, scale, ddof", [(True, False, 0), (True, True, 1)])
+def test_jax_fast_cv_stateless_per_dataset_weights(algorithm, center, scale, ddof):
+    """Traced per-dataset weights (e.g. distance-weighted local PLS) under
+    jax.jit(jax.vmap(...)) match a loop of weighted `cross_validate` and, for the first
+    dataset, the NumPy fast CV. So do traced weights with concrete shared indices and
+    concrete weights with traced indices. JIT is forced on."""
+    X, Y, val_idx, W = _per_dataset_problem()
+    B, N, _ = X.shape
+    n_folds, A = val_idx.shape[1], 4
+    kwargs = dict(
+        center_X=center, center_Y=center, scale_X=scale, scale_Y=scale, ddof=ddof
+    )
+    pls = JaxFastCVPLS(algorithm=algorithm, **kwargs)
+    pls.validate_folds(val_idx, N, W)
+
+    def cv(x, y, vi, w):
+        return pls.stateless_cross_validate(x, y, A, vi, _jax_mse_per_component, w)
+
+    def loop_ref(b, vi):
+        ref = pls.cross_validate(
+            X[b], Y[b], A, _labels_from_val_idx(vi, N), _jax_mse_per_component,
+            sample_weight=W[b], show_progress=False,
+        )
+        return np.stack([np.asarray(ref[f]) for f in range(n_folds)])
+
+    with jax.disable_jit(False):
+        out = np.asarray(jax.jit(jax.vmap(cv))(X, Y, val_idx, W))
+        shared = np.asarray(
+            jax.vmap(lambda x, y, w: cv(x, y, val_idx[0], w))(X, Y, W)
+        )
+        traced_idx = np.asarray(
+            jax.vmap(lambda vi: cv(X[0], Y[0], vi, W[0]))(val_idx)
+        )
+        refs = [loop_ref(b, val_idx[b]) for b in range(B)]
+        shared_refs = [loop_ref(b, val_idx[0]) for b in range(B)]
+    assert out.shape == (B, n_folds, A, Y.shape[-1])
+    for b in range(B):
+        assert_allclose(out[b], refs[b], rtol=1e-10, atol=1e-12)
+        assert_allclose(shared[b], shared_refs[b], rtol=1e-10, atol=1e-12)
+        assert_allclose(traced_idx[b], loop_ref(0, val_idx[b]), rtol=1e-10, atol=1e-12)
+    np_res = FastCVPLS(algorithm=algorithm, **kwargs).cross_validate(
+        X[0], Y[0], A, _labels_from_val_idx(val_idx[0], N), _np_mse_per_component,
+        sample_weight=W[0], n_jobs=1, verbose=0,
+    )
+    assert_allclose(
+        out[0], np.stack([np_res[f] for f in range(n_folds)]), rtol=1e-8, atol=1e-10
+    )
+
+
+def test_jax_fast_cv_stateless_weighted_calls_compile_and_check_concrete_weights():
+    """Weighted eager calls take the internally compiled path and match the un-jitted
+    path and `cross_validate`; concrete weights closed over inside the caller's jax.jit
+    work, and their degenerate folds are rejected there. JIT is forced on."""
+    import dataclasses
+
+    import ikpls.fast_cross_validation.jax as jax_fcv_module
+
+    @dataclasses.dataclass
+    class Metric:  # unhashable, so it runs un-jitted
+        def __call__(self, Y_true, Y_pred, weights):
+            return _jax_mse_per_component(Y_true, Y_pred, weights)
+
+    X, Y, val_idx, labels, w = _small_jax_problem()
+    A = 3
+    pls = JaxFastCVPLS(algorithm=1)
+    cache = jax_fcv_module._compiled_stateless_body
+    with jax.disable_jit(False):
+        calls = cache.cache_info().hits + cache.cache_info().misses
+        compiled = np.asarray(
+            pls.stateless_cross_validate(X, Y, A, val_idx, _jax_mse_per_component, w)
+        )
+        assert cache.cache_info().hits + cache.cache_info().misses == calls + 1
+        unjitted = np.asarray(pls.stateless_cross_validate(X, Y, A, val_idx, Metric(), w))
+        via_cv = pls.cross_validate(
+            X, Y, A, labels, _jax_mse_per_component, sample_weight=w,
+            show_progress=False,
+        )
+        closed_over = np.asarray(
+            jax.jit(
+                lambda x, y: pls.stateless_cross_validate(
+                    x, y, A, val_idx, _jax_mse_per_component, w
+                )
+            )(X, Y)
+        )
+        degenerate = w.copy()
+        degenerate[np.setdiff1d(np.arange(len(w)), val_idx[1])] = 0.0
+        for run in (
+            lambda: pls.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, degenerate
+            ),
+            lambda: jax.jit(
+                lambda x, y: pls.stateless_cross_validate(
+                    x, y, A, val_idx, _jax_mse_per_component, degenerate
+                )
+            )(X, Y),
+        ):
+            with pytest.raises(ValueError, match="Fold 1: the training set has no"):
+                run()
+    assert_allclose(unjitted, compiled, rtol=1e-12, atol=1e-14)
+    assert_allclose(closed_over, compiled, rtol=1e-12, atol=1e-14)
+    for f in range(val_idx.shape[0]):
+        assert_allclose(compiled[f], np.asarray(via_cv[f]), rtol=1e-10, atol=1e-12)
+
+
+def test_jax_fast_cv_validate_folds():
+    """`validate_folds` checks a stack of datasets' concrete folds and weights,
+    names the first failing dataset and fold, and agrees with cvmatrix's per-dataset
+    `CVMatrix.validate_folds`."""
+    from cvmatrix.cvmatrix import CVMatrix
+
+    _, _, val_idx, W = _per_dataset_problem(B=6)
+    B, n_folds, n_val = val_idx.shape
+    N = n_folds * n_val
+    pls = JaxFastCVPLS(scale_X=True, scale_Y=True, ddof=1)
+    for weights in (None, W, W[0], W[..., None], W[0][:, None]):
+        pls.validate_folds(val_idx, N, weights)
+    pls.validate_folds(val_idx[0], N, W[0])
+    pls.validate_folds(val_idx.reshape(2, 3, n_folds, n_val), N, W.reshape(2, 3, N))
+
+    out_of_range = val_idx.copy()
+    out_of_range[2, 1, 0] = N
+    duplicate = val_idx.copy()
+    duplicate[4, 3, 1] = duplicate[4, 3, 0]
+    negative = W.copy()
+    negative[3, 5] = -1.0
+    empty = W.copy()
+    empty[1] = 0.0
+    empty[1, val_idx[1, 0]] = 1.0  # only fold 0's validation set has weight
+    one_left = W.copy()
+    one_left[5] = 0.0
+    one_left[5, val_idx[5, 2]] = 1.0
+    one_left[5, val_idx[5, 3, 0]] = 1.0  # fold 2 trains on one non-zero weight
+    cases = [
+        (out_of_range, None, "Dataset 2, fold 1: .*outside range"),
+        (duplicate, None, "Dataset 4, fold 3: .*distinct"),
+        (val_idx, negative, r"non-negative, but `sample_weight\[3\]`"),
+        (
+            val_idx.reshape(2, 3, n_folds, n_val),
+            negative.reshape(2, 3, N),
+            r"non-negative, but `sample_weight\[1, 0\]`",
+        ),
+        (val_idx, empty, "Dataset 1, fold 0: the training set has no non-zero"),
+        (val_idx, one_left, r"Dataset 5, fold 2: .*too few non-zero weights \(=1\)"),
+        (
+            val_idx.reshape(2, 3, n_folds, n_val),
+            empty.reshape(2, 3, N),
+            r"Dataset \(0, 1\), fold 0: the training set has no non-zero",
+        ),
+        (val_idx, W[:, :-1], "shape"),
+        (val_idx, W[:4], "broadcast"),
+        (val_idx[0, 0], None, "integer array of shape"),
+        (val_idx.astype(float), None, "integer array of shape"),
+        (np.arange(N)[None], None, "smaller"),
+    ]
+    for vi, weights, match in cases:
+        with pytest.raises(ValueError, match=match):
+            pls.validate_folds(vi, N, weights)
+    with pytest.raises(ValueError, match="ddof"):
+        JaxFastCVPLS(scale_X=True, ddof=n_folds * n_val).validate_folds(val_idx, N)
+    JaxFastCVPLS(
+        center_X=False, center_Y=False, scale_X=False, scale_Y=False
+    ).validate_folds(val_idx, N, empty)
+
+    rng = np.random.default_rng(5)
+    for settings in (
+        dict(center_X=True, center_Y=False, scale_X=False, scale_Y=False, ddof=0),
+        dict(center_X=True, center_Y=True, scale_X=True, scale_Y=True, ddof=2),
+    ):
+        pls = JaxFastCVPLS(**settings)
+        cvm = CVMatrix(**settings)
+        for _ in range(40):
+            vi = rng.permutation(12).reshape(4, 3)
+            w = rng.uniform(0.5, 1.0, 12) * (rng.random(12) < 0.4)
+            try:
+                cvm.validate_folds(vi, 12, w)
+                expected_ok = True
+            except ValueError:
+                expected_ok = False
+            try:
+                pls.validate_folds(vi, 12, w)
+                ok = True
+            except ValueError:
+                ok = False
+            assert ok == expected_ok
 
 
 def test_transform_and_inverse_transform_match_sklearn():

@@ -1,6 +1,6 @@
 [project]
 name = "ikpls"
-version = "6.2.0"
+version = "6.3.0"
 description = "Improved Kernel PLS and Fast Cross-Validation."
 authors = [{ name = "sm00thix", email = "oleemail@icloud.com" }]
 maintainers = [{ name = "sm00thix", email = "oleemail@icloud.com" }]
@@ -20,7 +20,7 @@ dependencies = [
     "numpy>=2.0.0",
     "scikit-learn>=1.6.0",
     "joblib>=1.3.2",
-    "cvmatrix>=3.3.0",
+    "cvmatrix>=3.4.0",
 ]
 
 [project.optional-dependencies]
@@ -31,10 +31,14 @@ dependencies = [
 # 3.2.0; cvmatrix 3.2.1 additionally avoids importing JAX at module import time,
 # so `import ikpls.fast_cross_validation.numpy` stays JAX-free; cvmatrix 3.2.2 is
 # the first release supporting Python 3.10; cvmatrix 3.3.0 adds `compute_XTX`,
-# which the Algorithm #1 fast cross-validation uses to skip the unused X^T W X.
+# which the Algorithm #1 fast cross-validation uses to skip the unused X^T W X;
+# cvmatrix 3.4.0 accepts sample weights traced by jax.jit/jax.vmap, which
+# `stateless_cross_validate` needs for per-dataset weights. The base dependency
+# requires the same cvmatrix, so that upgrading ikpls without the extra cannot
+# keep a cvmatrix too old for an installed JAX.
 # tqdm is only used by the JAX implementations (the cross_validate progress
 # bars), so it lives here rather than in the base dependencies.
-jax = ["jax>=0.5.0", "jaxlib>=0.5.0", "cvmatrix[jax]>=3.3.0", "tqdm>=4.66.1"]
+jax = ["jax>=0.5.0", "jaxlib>=0.5.0", "cvmatrix[jax]>=3.4.0", "tqdm>=4.66.1"]
 
 [project.urls]
 Homepage = "https://ikpls.readthedocs.io/en/latest/"

@@ -42,6 +42,7 @@ wrapper conforms to the scikit-learn estimator API, it can be used with scikit-l
   Our JAX implementations are **end-to-end differentiable** allowing **gradient propagation** when using **PLS as a layer in a deep learning model**.
 - Use our combination of NumPy and JAX IKPLS with Engstrøm's and Jensen's **unbelievably fast cross-validation** algorithm [[7]](#references) to quickly determine the optimal combination of preprocessing and number of PLS components.
 - Use any of the above in combination with **sample-weighted PLS** [[8]](#references).
+- Use our JAX fast cross-validation with `jax.vmap` to cross-validate **thousands of independent PLS models at once**, each with its own folds and sample weights, e.g. **distance-weighted local PLS** with one model per unknown sample.
 - Use our NumPy or JAX implementations for dimensionality reduction to score space with their respective transform methods.
 - Use our NumPy or JAX implementations for reconstruction of original space from score space with their respective inverse_transform methods.
 
@@ -219,6 +220,8 @@ will find:
 -   [Cross-validate with NumPy and weighted fast cross-validation.](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_weighted_cross_val_numpy.py)
 -   [Cross-validate with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/cross_val_jax.py)
 -   [Cross-validate with JAX and fast cross-validation (`jax.vmap` over folds on CPU/GPU/TPU).](https://github.com/Sm00thix/IKPLS/tree/main/examples/fast_cross_val_jax.py)
+-   [Cross-validate many independent datasets at once with JAX fast cross-validation and `jax.vmap` (e.g. 2,000 datasets, each with its own 10-fold split).](https://github.com/Sm00thix/IKPLS/tree/main/examples/vmap_fast_cross_val_jax.py)
+-   [Distance-weighted local PLS for many unknown samples at once with JAX: neighbour search, per-sample cross-validation of the number of components, and per-sample fit and prediction.](https://github.com/Sm00thix/IKPLS/tree/main/examples/local_pls_jax.py)
 -   [Compute the gradient of a preprocessing convolution filter with respect to the RMSE between the target value and the value predicted by PLS after fitting with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/gradient_jax.py)
 -   [Weighted Fit and Predict with NumPy.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_fit_predict_numpy.py)
 -   [Weighted Fit and Predict with JAX.](https://github.com/Sm00thix/IKPLS/tree/main/examples/weighted_fit_predict_jax.py)
