@@ -1077,8 +1077,12 @@ def test_jax_fast_cv_compile_cache_keeps_the_latest_metric_per_settings(api, mon
             def method(self, Y_true, Y_pred, weights=None):
                 return self(Y_true, Y_pred, weights)
 
-        class RaisingEq:  # an __eq__ that fails against anything else
+        class RaisingEq:  # an __eq__ that fails against another metric function
             def __eq__(self, other):
+                # In older Pythons, e.g. 3.10, 3.11 and 3.12.3, inspect.signature
+                # (called by typeguard) compares any callable with `type` and `object`.
+                if other is type or other is object:
+                    return NotImplemented
                 return self.missing == other.missing
 
             __hash__ = object.__hash__
@@ -1568,11 +1572,13 @@ def test_jax_predict_with_symbolic_rows_and_undocumented_shapes():
     `stateless_predict` patched onto the instance."""
     from unittest import mock
 
+    from jax import export  # not loaded by `import jax` in older JAX, e.g. 0.6
+
     X, Y, _, _, _ = _small_jax_problem(N=100, K=3, M=3)  # enough rows to fold
     pls = JAX_Alg_2().fit(X, Y, 3)
     stats = (pls.X_mean, pls.X_std, pls.Y_mean, pls.Y_std)
     flat_stats = [s.reshape(-1) for s in stats]
-    (n,) = jax.export.symbolic_shape("n")
+    (n,) = export.symbolic_shape("n")
     rows = jax.ShapeDtypeStruct((n, X.shape[1]), X.dtype)
     for n_components in (None, 2):
         ref = np.asarray(pls.stateless_predict(X, pls.B, n_components, *stats))
@@ -1581,7 +1587,7 @@ def test_jax_predict_with_symbolic_rows_and_undocumented_shapes():
                 lambda x: pls.predict(x, n_components),
                 lambda x: pls.stateless_predict(x, pls.B, n_components, *stats),
             ):
-                exported = jax.export.export(jax.jit(f))(rows)
+                exported = export.export(jax.jit(f))(rows)
                 assert_allclose(np.asarray(exported.call(X)), ref, rtol=1e-12)
         out = pls.stateless_predict(X, pls.B, n_components, *flat_stats)
         assert_allclose(np.asarray(out), ref, rtol=1e-12, atol=1e-14)
