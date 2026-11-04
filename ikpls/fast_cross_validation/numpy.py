@@ -22,6 +22,7 @@ from cvmatrix.partitioner import Partitioner
 from joblib import Parallel, delayed
 
 from ikpls._impl.pls_steps import improved_kernel_pls_inner_loop
+from ikpls._impl.prediction import predict as _predict
 
 
 class PLS:
@@ -303,23 +304,16 @@ class PLS:
         -----
         """
 
-        predictor_variables = self.cvm.X[indices]
-        # Apply the potential training set centering and scaling
-        if self.center_X:
-            predictor_variables = predictor_variables - training_X_mean
-        if self.scale_X:
-            predictor_variables = predictor_variables / training_X_std
-        if n_components is None:
-            Y_pred = predictor_variables @ B
-        else:
-            Y_pred = predictor_variables @ B[n_components - 1]
-        # Multiply by the potential training set scale and add the potential training
-        # set bias
-        if self.scale_Y:
-            Y_pred = Y_pred * training_Y_std
-        if self.center_Y:
-            Y_pred = Y_pred + training_Y_mean
-        return Y_pred
+        B = B if n_components is None else B[n_components - 1]
+        # With the potential training set centering and scaling of X and Y
+        return _predict(
+            self.cvm.X[indices],
+            B,
+            training_X_mean if self.center_X else None,
+            training_X_std if self.scale_X else None,
+            training_Y_mean if self.center_Y else None,
+            training_Y_std if self.scale_Y else None,
+        )
 
     def _stateless_fit_predict_eval(
         self,
@@ -422,7 +416,9 @@ class PLS:
             available cores and the number of unique values in `folds`.
 
         verbose : int, default=10
-            Controls verbosity of parallel jobs.
+            Controls verbosity. If non-zero, a summary of the cross-validation is
+            printed, and the parallel jobs report their progress (more often for higher
+            values). If 0, neither is printed.
 
         Returns
         -------
@@ -466,11 +462,12 @@ class PLS:
         if n_jobs == -1:
             n_jobs = min(joblib.cpu_count(), num_splits)
 
-        print(
-            f"Cross-validating Improved Kernel PLS Algorithm {self.algorithm} with {A}"
-            f" components on {num_splits} unique splits using {n_jobs} "
-            f"parallel processes."
-        )
+        if verbose:
+            print(
+                f"Cross-validating Improved Kernel PLS Algorithm {self.algorithm} with"
+                f" {A} components on {num_splits} unique splits using {n_jobs} "
+                f"parallel processes."
+            )
 
         self.cvm.fit(X, Y, sample_weight)
         self.A = A

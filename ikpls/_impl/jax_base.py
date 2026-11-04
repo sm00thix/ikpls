@@ -13,6 +13,7 @@ E-mail: ocge@foss.dk
 """
 
 import abc
+import operator
 from collections import defaultdict
 from collections.abc import Callable
 from functools import partial
@@ -25,6 +26,54 @@ import numpy as np
 from jax.typing import ArrayLike, DTypeLike
 from sklearn.exceptions import NotFittedError
 from tqdm import tqdm
+
+from ikpls._impl.compile_cache import _CompiledCache, constructor_settings
+from ikpls._impl.prediction import predict as _predict
+
+
+def _jax_matmul(X: jax.Array, B: jax.Array) -> jax.Array:
+    """``X @ B`` for X (N, K) and B (K, M), or B (A, K, M) -> (A, N, M) as an einsum,
+    which XLA compiles to a faster product than the broadcasting matmul when B is an
+    argument of the program: e.g. 22 us instead of about 50 us for one sample with
+    K = 2,800 and A = 30 on a CPU, and the same on a GPU. Used by `predict` only; see
+    `PLSBase._fitted_predict`."""
+    if X.ndim == 2 and B.ndim == 3:
+        return jnp.einsum("nk,akm->anm", X, B)
+    return X @ B
+
+
+def _build_cross_validate(
+    pls: Any,
+    metric_function: Callable[..., Any],
+    preprocessing_function: Optional[Callable[..., Any]],
+) -> Callable[..., Any]:
+    """The per-fold computation of ``cross_validate``: `_inner_cross_validate`
+    ``jax.vmap``-ed over a batch of folds, ``jax.jit``-compiled per input shapes/dtypes,
+    `A` and whether `sample_weight` is None."""
+
+    def body(X, Y, sample_weight, train_idxs, val_idxs, A):
+        def fold_fn(train_idxs, val_idxs):
+            return pls._inner_cross_validate(
+                X=X,
+                Y=Y,
+                train_idxs=train_idxs,
+                val_idxs=val_idxs,
+                A=A,
+                sample_weight=sample_weight,
+                preprocessing_function=preprocessing_function,
+                metric_function=metric_function,
+            )
+
+        return jax.vmap(fold_fn)(train_idxs, val_idxs)
+
+    return jax.jit(body, static_argnames=("A",))
+
+
+# Separate caches for weighted and unweighted calls, whose metric functions take
+# different arguments, so alternating between the two does not recompile.
+_cross_validate_programs = {
+    w: _CompiledCache(_build_cross_validate) for w in (False, True)
+}
 
 
 class PLSBase(abc.ABC):
@@ -813,8 +862,9 @@ class PLSBase(abc.ABC):
         i) -> (carry, outputs)`` suitable for `jax.lax.scan`, where the carry is
         ``(XTY, P, R, Bprev)`` and the constant operand (`X` for Algorithm #1,
         `XTX` for Algorithm #2) plus the static `M`, `K`, `A` are captured by closure.
-        It must NOT be jitted on its own -- it is traced as part of the scan inside the
-        jitted `stateless_fit`.
+        Algorithm #1 also takes optional weights `sample_weight` after `i`, likewise
+        captured by closure. It must NOT be jitted on its own -- it is traced as part
+        of the scan inside the jitted `stateless_fit`.
         """
 
     @abc.abstractmethod
@@ -1074,27 +1124,49 @@ class PLSBase(abc.ABC):
         `X_mean`, `X_std`, `Y_mean`, and `Y_std` instead of the ones passed as
         arguments.
         """
+        return self._stateless_predict(
+            X, B, n_components, X_mean, X_std, Y_mean, Y_std, operator.matmul
+        )
+
+    def _stateless_predict(
+        self,
+        X: ArrayLike,
+        B: jax.Array,
+        n_components: Optional[int],
+        X_mean: Optional[jax.Array],
+        X_std: Optional[jax.Array],
+        Y_mean: Optional[jax.Array],
+        Y_std: Optional[jax.Array],
+        matmul: Callable[[jax.Array, jax.Array], jax.Array],
+    ) -> jax.Array:
+        """`stateless_predict` with the products ``X @ B`` computed by `matmul`."""
         X = jnp.asarray(X, dtype=self.dtype)
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_predict for {self.name} will be JIT compiled...")
 
-        if X_mean is not None:
-            X = X - X_mean
-        if X_std is not None:
-            X = X / X_std
+        B = B if n_components is None else B[n_components - 1]
+        # As X @ B' + b0 when cheaper, chosen from the static shapes; see `_predict`.
+        return _predict(X, B, X_mean, X_std, Y_mean, Y_std, matmul=matmul)
 
-        if n_components is None:
-            Y_pred = X @ B
-        else:
-            Y_pred = X @ B[n_components - 1]
+    @partial(jax.jit, static_argnums=(0, 3))
+    def _fitted_predict(
+        self,
+        X: ArrayLike,
+        B: jax.Array,
+        n_components: Optional[int],
+        X_mean: Optional[jax.Array],
+        X_std: Optional[jax.Array],
+        Y_mean: Optional[jax.Array],
+        Y_std: Optional[jax.Array],
+    ) -> jax.Array:
+        """`stateless_predict` for `predict`, with the product for all components as an
+        einsum (`_jax_matmul`): faster in this program, where B is an argument, than
+        the broadcasting matmul that `stateless_predict` keeps, which was as fast or
+        faster, and leaner, within the programs of the cross-validations."""
+        return self._stateless_predict(
+            X, B, n_components, X_mean, X_std, Y_mean, Y_std, _jax_matmul
+        )
 
-        if Y_std is not None:
-            Y_pred = Y_pred * Y_std
-        if Y_mean is not None:
-            Y_pred = Y_pred + Y_mean
-        return Y_pred
-
-    @partial(jax.jit, static_argnums=(0, 2))
     def predict(self, X: ArrayLike, n_components: Optional[int] = None) -> jax.Array:
         """
         Predicts with Improved Kernel PLS Algorithm #1 on `X` with `B` using
@@ -1128,7 +1200,14 @@ class PLSBase(abc.ABC):
             raise NotFittedError(
                 "This model is not fitted yet, call 'fit' with approriate arguments before 'predict'."
             )
-        return self.stateless_predict(
+        # An override of `stateless_predict`, in a subclass or patched onto the class or
+        # the instance, is called, as in earlier versions.
+        overridden = (
+            "stateless_predict" in vars(self)
+            or type(self).stateless_predict is not _BASE_STATELESS_PREDICT
+        )
+        predict = self.stateless_predict if overridden else self._fitted_predict
+        return predict(
             X, self.B, n_components, self.X_mean, self.X_std, self.Y_mean, self.Y_std
         )
 
@@ -1410,7 +1489,34 @@ class PLSBase(abc.ABC):
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"stateless_fit_predict_eval for {self.name} will be JIT compiled...")
+        return self._fit_predict_eval(
+            X_train,
+            Y_train,
+            A,
+            weights_train,
+            X_val,
+            Y_val,
+            weights_val,
+            metric_function,
+        )
 
+    def _fit_predict_eval(
+        self,
+        X_train: ArrayLike,
+        Y_train: ArrayLike,
+        A: int,
+        weights_train: Optional[ArrayLike],
+        X_val: ArrayLike,
+        Y_val: ArrayLike,
+        weights_val: Optional[ArrayLike],
+        metric_function: Callable[..., Any],
+    ) -> Any:
+        """
+        The computation of `stateless_fit_predict_eval`, not jitted on its own: it is
+        traced as part of the caller's computation, so `metric_function` is not a
+        static argument of a jitted function (JAX's caches would keep it alive, and it
+        would have to be hashable).
+        """
         X_train, Y_train, weights_train = self._initialize_input_matrices(
             X=X_train, Y=Y_train, sample_weight=weights_train
         )
@@ -1513,7 +1619,22 @@ class PLSBase(abc.ABC):
         (A, N_val, M), and, if `sample_weight` is not None, also, `weights_val` (N_val,),\
         and returning Any.
             Computes a metric based on true values `Y_val` and predicted values
-            `Y_pred`. `Y_pred` contains a prediction for all `A` components.
+            `Y_pred`. `Y_pred` contains a prediction for all `A` components. The
+            compiled program is kept for the most recently used `metric_function` and
+            `preprocessing_function` per settings (separately for weighted and
+            unweighted calls), matched by identity (the same method of the same object
+            counts as the same). So define them once rather than per call: another
+            object -- a lambda created per call, or a new instance of a callable class,
+            even an equal one -- compiles anew and replaces the program, as does
+            alternating between two functions. To evaluate several metrics, return
+            them all from one function. Both are traced when first compiled, so what
+            they read then -- values they close over, globals, or their own attributes
+            -- is fixed for later calls with the same functions. They, and what they
+            close over, stay alive until other functions replace them or their
+            settings are evicted: programs are kept for the 64 most recently used
+            settings. A subclass that overrides `stateless_fit_predict_eval` gets it
+            called with them as static arguments, as before: there, they must be
+            hashable, and JAX's caches keep them alive.
 
         metric_names : list of str
             A list of names for the metrics used for evaluation.
@@ -1524,7 +1645,8 @@ class PLSBase(abc.ABC):
             `X_val`, and `Y_val`. If Callable, it should receive arrays `X_train`,
             `Y_train`, `X_val`, `Y_val`, and, if `sample_weight` is not None, also
             `weights_train`, and `weights_val`, and returning a Tuple of preprocessed
-            `X_train`, `Y_train`, `X_val`, and `Y_val`.
+            `X_train`, `Y_train`, `X_val`, and `Y_val`. It is matched and kept like
+            `metric_function` (see there).
 
         show_progress : bool, default=True
             If True, displays a progress bar for the cross-validation.
@@ -1574,6 +1696,18 @@ class PLSBase(abc.ABC):
         Note that, because `jax.vmap` is used, `metric_function` and
         `preprocessing_function` must be JAX-traceable. The JAX implementation emits no
         underflow warning in any path (single fit or cross-validation).
+
+        The per-fold computation is compiled per combination of input shapes,
+        settings, `A` and batch shape for the most recently used `metric_function` and
+        `preprocessing_function` (see `metric_function`), and later calls with the
+        same functions reuse it, also with new data, e.g. one call per local model.
+        The compiled program is built from a new instance constructed from this
+        instance's constructor arguments, read from the attributes of the same names
+        (the scikit-learn convention). A subclass must follow that convention, as
+        other instance state is not part of the compiled program. A subclass
+        constructor's ``**kwargs`` stand for its base class's constructor arguments.
+        If the constructor arguments cannot be read or hashed, or a new instance
+        constructed from them does not reproduce them, each call compiles anew.
         """
         X = jnp.asarray(X, dtype=self.dtype)
         Y = jnp.asarray(Y, dtype=self.dtype)
@@ -1598,21 +1732,9 @@ class PLSBase(abc.ABC):
         # The per-fold fit-predict-evaluate is batched over folds with jax.vmap (instead
         # of a Python loop). The JAX fit emits no host-side callbacks, so it is vmap-safe
         # and is used directly.
-        fitter = self
-
-        def fold_fn(train_idxs, val_idxs):
-            return fitter._inner_cross_validate(
-                X=X,
-                Y=Y,
-                train_idxs=train_idxs,
-                val_idxs=val_idxs,
-                A=A,
-                sample_weight=sample_weight,
-                preprocessing_function=preprocessing_function,
-                metric_function=metric_function,
-            )
-
-        vmapped = jax.jit(jax.vmap(fold_fn))
+        vmapped = self._vmapped_fold_fn(
+            X, Y, A, sample_weight, preprocessing_function, metric_function
+        )
 
         # Group folds by validation-set size so vmap sees fixed shapes, and process each
         # group in `batch_size` chunks to bound peak memory.
@@ -1653,7 +1775,54 @@ class PLSBase(abc.ABC):
             )
         return self._finalize_metric_values(metric_value_lists, metric_names)
 
-    @partial(jax.jit, static_argnums=(0, 5, 7, 8))
+    def _vmapped_fold_fn(
+        self,
+        X: jax.Array,
+        Y: jax.Array,
+        A: int,
+        sample_weight: Optional[jax.Array],
+        preprocessing_function: Optional[Callable[..., Any]],
+        metric_function: Callable[..., Any],
+    ) -> Callable[[jax.Array, jax.Array], Any]:
+        """
+        The jitted fit-predict-evaluate of `cross_validate`, ``jax.vmap``-ed over a
+        batch of folds given by their training and validation indices. With hashable
+        settings, it is the cached compiled program, which takes the data as arguments;
+        otherwise, a new ``jax.jit`` that closes over it.
+        """
+        settings = self._settings()
+        compiled = None
+        if settings is not None:
+            cache = _cross_validate_programs[sample_weight is not None]
+            compiled = cache.get(
+                type(self), settings, metric_function, preprocessing_function
+            )
+        if compiled is not None:
+
+            def vmapped(train_idxs, val_idxs):
+                return compiled(X, Y, sample_weight, train_idxs, val_idxs, A=A)
+
+            return vmapped
+
+        def fold_fn(train_idxs, val_idxs):
+            return self._inner_cross_validate(
+                X=X,
+                Y=Y,
+                train_idxs=train_idxs,
+                val_idxs=val_idxs,
+                A=A,
+                sample_weight=sample_weight,
+                preprocessing_function=preprocessing_function,
+                metric_function=metric_function,
+            )
+
+        return jax.jit(jax.vmap(fold_fn))
+
+    def _settings(self) -> Optional[tuple]:
+        """The constructor settings keying the compiled programs; see
+        ``constructor_settings``."""
+        return constructor_settings(self)
+
     def _inner_cross_validate(
         self,
         X: ArrayLike,
@@ -1752,7 +1921,12 @@ class PLSBase(abc.ABC):
         Notes
         -----
         This method performs cross-validation for a single fold of the data, including
-        preprocessing, fitting, predicting, and evaluating the PLS model.
+        preprocessing, fitting, predicting, and evaluating the PLS model. It is not
+        jitted on its own but traced as part of `cross_validate`'s compiled program, so
+        `metric_function` and `preprocessing_function` are not static arguments of a
+        jitted function: JAX's caches do not keep them alive, and they need not be
+        hashable. A subclass that overrides `stateless_fit_predict_eval` has it called
+        here, with `metric_function` as its static argument as before.
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_inner_cv for {self.name} will be JIT compiled...")
@@ -1779,7 +1953,13 @@ class PLSBase(abc.ABC):
                 X_train, Y_train, X_val, Y_val = preprocessing_function(
                     X_train, Y_train, X_val, Y_val, weights_train, weights_val
                 )
-        metric_values = self.stateless_fit_predict_eval(
+        # A subclass's override of the public method is honoured, at the cost of
+        # its jit keeping `metric_function` alive.
+        overridden = type(self).stateless_fit_predict_eval is not _BASE_FIT_PREDICT_EVAL
+        fit_predict_eval = (
+            self.stateless_fit_predict_eval if overridden else self._fit_predict_eval
+        )
+        return fit_predict_eval(
             X_train=X_train,
             Y_train=Y_train,
             A=A,
@@ -1789,7 +1969,6 @@ class PLSBase(abc.ABC):
             weights_val=weights_val,
             metric_function=metric_function,
         )
-        return metric_values
 
     def _update_metric_value_lists(
         self,
@@ -1859,3 +2038,10 @@ class PLSBase(abc.ABC):
         ):
             metrics[name] = lst_of_metric_value_for_each_split
         return metrics
+
+
+# The base class's own `stateless_fit_predict_eval`: `_inner_cross_validate` calls
+# any other one, an override or one patched onto the class (e.g. by `unittest.mock`).
+_BASE_FIT_PREDICT_EVAL = PLSBase.stateless_fit_predict_eval
+# Likewise for `stateless_predict`, which `predict` calls if it is not this one.
+_BASE_STATELESS_PREDICT = PLSBase.stateless_predict

@@ -275,6 +275,68 @@ def test_jax_reverse_gradients_finite_on_degenerate_scaling_and_overextraction()
             assert bool(jnp.any(grad != 0.0))
 
 
+@pytest.mark.parametrize(
+    "center, scale, ddof", [(False, False, 0), (True, False, 1), (True, True, 0)]
+)
+def test_jax_alg1_weight_gradients_finite_at_zero_weights(center, scale, ddof):
+    """Gradients with respect to the sample weights are finite where a weight is
+    exactly zero, and equal Algorithm #2's (the algorithms are mathematically
+    equivalent), through both the fit and the JAX fast CV. Algorithm #1 used to scale
+    the rows of X by sqrt(weights), whose infinite derivative at zero made them NaN."""
+    rng = np.random.default_rng(3)
+    N, K, M, A = 30, 8, 2, 4
+    X = rng.standard_normal((N, K))
+    Y = X @ rng.standard_normal((K, M)) + 0.1 * rng.standard_normal((N, M))
+    w = rng.uniform(0.5, 2.0, size=N)
+    zero = np.array([3, 7, 11])
+    w[zero] = 0.0
+    w = jnp.asarray(w)
+    X_test = rng.standard_normal((5, K))
+    val_idx = jnp.asarray(np.arange(N).reshape(5, 6))
+    kwargs = dict(
+        center_X=center, center_Y=center, scale_X=scale, scale_Y=scale, ddof=ddof
+    )
+
+    def fit_loss(cls):
+        pls = cls(**kwargs)
+
+        def loss(w):
+            B, *_, X_mean, Y_mean, X_std, Y_std = pls.stateless_fit(X, Y, A, w)
+            Y_pred = pls.stateless_predict(
+                X_test, B, None, X_mean, X_std, Y_mean, Y_std
+            )
+            return jnp.sum(Y_pred**2)
+
+        return loss
+
+    def cv_loss(algorithm):
+        pls = JaxFastCVPLS(algorithm=algorithm, **kwargs)
+
+        def loss(w):
+            mse = pls.stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, w
+            )
+            return jnp.sum(mse)
+
+        return loss
+
+    for loss_1, loss_2 in [
+        (fit_loss(JAX_Alg_1), fit_loss(JAX_Alg_2)),
+        (cv_loss(1), cv_loss(2)),
+    ]:
+        grad_1 = jax.grad(loss_1)(w)
+        grad_2 = jax.grad(loss_2)(w)
+        assert bool(jnp.all(jnp.isfinite(grad_1)))
+        assert bool(jnp.all(grad_1[zero] != 0.0))
+        assert_allclose(grad_1, grad_2, rtol=1e-9, atol=1e-12)
+
+    # A sample's weighted scores sqrt(w_i) X_i R are not differentiable at w_i = 0;
+    # that term's derivative is taken as zero, so gradients through T stay finite.
+    pls = JAX_Alg_1(**kwargs)
+    grad_T = jax.grad(lambda w: jnp.sum(pls.stateless_fit(X, Y, A, w)[5]))(w)
+    assert bool(jnp.all(jnp.isfinite(grad_T)))
+
+
 def test_jax_small_magnitude_unscaled_data_matches_numpy():
     """The JAX underflow guards must not fire on legitimately small-magnitude data.
 
@@ -437,6 +499,24 @@ def test_fast_cv_reused_instance_resets_stale_weights():
     )
     for key in fresh_res:
         assert_allclose(reused_res[key], fresh_res[key], atol=0, rtol=0)
+
+
+def test_fast_cv_verbose_zero_prints_nothing(capsys):
+    """The NumPy fast CV prints its summary line only if `verbose` is non-zero."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((40, 8))
+    Y = rng.standard_normal((40, 2))
+    folds = np.arange(40) % 4
+
+    def mse(Y_true, Y_pred):
+        return float(np.mean((Y_true - Y_pred) ** 2))
+
+    pls = FastCVPLS(algorithm=1)
+    pls.cross_validate(X, Y, 3, folds, mse, n_jobs=1, verbose=0)
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+    pls.cross_validate(X, Y, 3, folds, mse, n_jobs=1, verbose=1)
+    assert "Cross-validating" in capsys.readouterr().out
 
 
 def _jax_mse_per_component(Y_true, Y_pred, weights=None):
@@ -603,7 +683,7 @@ def test_jax_fast_cv_stateless_1d_y_and_loo_match_numpy(algorithm):
 @pytest.mark.parametrize("weighted", [False, True])
 @pytest.mark.parametrize("center, scale", [(True, True), (False, False)])
 def test_jax_fast_cv_cross_validate_alg1_imbalanced_folds_matches_numpy(weighted, center, scale):
-    """Algorithm #1 gathers each fold's training rows and sqrt-weights by the fold's
+    """Algorithm #1 gathers each fold's training rows and weights by the fold's
     training indices; size-imbalanced folds exercise one vmap group per size and must
     match the NumPy fast CV."""
     rng = np.random.default_rng(3)
@@ -629,9 +709,59 @@ def test_jax_fast_cv_cross_validate_alg1_imbalanced_folds_matches_numpy(weighted
         assert_allclose(np.asarray(jax_res[f]), np_res[f], rtol=1e-8, atol=1e-10)
 
 
+@pytest.mark.filterwarnings("ignore:X score norm is close to zero")
+@pytest.mark.parametrize("algorithm", [1, 2])
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("center, scale", [(False, False), (True, False), (True, True)])
+def test_jax_fast_cv_carries_last_stable_component_forward(
+    algorithm, weighted, center, scale
+):
+    """With more components than a fold's training X has numerical rank, the
+    predictions for the excess components equal those with the fold's last stable
+    component and match the NumPy fast CV, in `cross_validate` (folds of different
+    sizes, hence different ranks) and `stateless_cross_validate`. They used to be built
+    from round-off noise, giving MSEs of up to about 1e35."""
+    rng = np.random.default_rng(8)
+    N, K, M, A = 14, 20, 2, 14
+    X = rng.standard_normal((N, K))
+    Y = rng.standard_normal((N, M))
+    sample_weight = rng.uniform(0.5, 2.0, size=N) if weighted else None
+    kwargs = dict(center_X=center, center_Y=center, scale_X=scale, scale_Y=scale)
+
+    def check(jax_mse, np_mse):
+        jax_mse = np.asarray(jax_mse)
+        assert_allclose(jax_mse, np_mse, rtol=1e-8, atol=1e-10)
+        assert np.all(jax_mse < 1e3)
+        assert_allclose(jax_mse[-1], jax_mse[-2], rtol=0, atol=0)  # carried forward
+
+    # Training sets of 12, 11, 10 and 9 samples.
+    folds = np.repeat(np.arange(4), [2, 3, 4, 5])
+    jax_res = JaxFastCVPLS(algorithm=algorithm, **kwargs).cross_validate(
+        X, Y, A, folds, _jax_mse_per_component, sample_weight=sample_weight,
+        show_progress=False,
+    )
+    np_res = FastCVPLS(algorithm=algorithm, **kwargs).cross_validate(
+        X, Y, A, folds, _np_mse_per_component, sample_weight=sample_weight,
+        n_jobs=1, verbose=0,
+    )
+    for f in np_res:
+        check(jax_res[f], np_res[f])
+
+    val_idx = rng.permutation(N).reshape(7, 2)
+    stateless = JaxFastCVPLS(algorithm=algorithm, **kwargs).stateless_cross_validate(
+        X, Y, A, val_idx, _jax_mse_per_component, sample_weight
+    )
+    np_res = FastCVPLS(algorithm=algorithm, **kwargs).cross_validate(
+        X, Y, A, _labels_from_val_idx(val_idx, N), _np_mse_per_component,
+        sample_weight=sample_weight, n_jobs=1, verbose=0,
+    )
+    for f in range(val_idx.shape[0]):
+        check(stateless[f], np_res[f])
+
+
 def test_jax_fast_cv_reused_instance_has_no_stale_state():
-    """A weighted `cross_validate` (Algorithm #1 sqrt-weights its gathered training
-    rows) followed by an unweighted `stateless_cross_validate` and `cross_validate` on
+    """A weighted `cross_validate` (Algorithm #1 gathers its training rows' weights)
+    followed by an unweighted `stateless_cross_validate` and `cross_validate` on
     the SAME instance must equal a fresh instance's results."""
     rng = np.random.default_rng(6)
     N, K, M, A, n_folds = 40, 8, 2, 3, 4
@@ -765,8 +895,8 @@ def test_jax_fast_cv_stateless_checks_closed_over_indices_under_jit():
 
 
 def test_jax_fast_cv_stateless_unhashable_metric():
-    """An unhashable metric callable cannot key the internal compilation cache; it
-    runs un-jitted and gives the same result."""
+    """An unhashable metric callable is compiled like any other (the cache compares
+    metric functions by identity, not by hash) and gives the same result."""
     import dataclasses
 
     @dataclasses.dataclass
@@ -857,36 +987,629 @@ def test_jax_fast_cv_stateless_subclass_and_changed_settings():
             assert_allclose(np.asarray(a[f]), np.asarray(b[f]), rtol=1e-10, atol=1e-12)
 
 
-def test_jax_fast_cv_stateless_compile_cache_is_bounded_and_inputs_are_lenient():
-    """The internal compile cache keeps only the most recently used metric functions
-    (a new one per call must not be retained forever), and an instance with an
-    unhashable constructor argument (which cannot key the cache) runs un-jitted."""
+def _counting_metric(n_traces, scale=1.0):
+    """A new metric function, `scale` times the MSE, that appends to `n_traces`
+    whenever it runs, which under JIT is only while it is traced."""
+
+    def metric(Y_true, Y_pred, weights=None):
+        n_traces.append(1)
+        return scale * _jax_mse_per_component(Y_true, Y_pred, weights)
+
+    return metric
+
+
+def _mean_prediction(Y_true, Y_pred, weights=None):
+    """A metric that exposes the predictions themselves: their mean per component."""
+    return jnp.mean(Y_pred, axis=-2)
+
+
+class _DoubledJaxFastCVPLS(JaxFastCVPLS):
+    """A subclass with the same constructor arguments but other predictions."""
+
+    def _predict_on_val(self, *args):
+        return 2 * super()._predict_on_val(*args)
+
+
+def _fast_cv_call(api, pls, X, Y, val_idx, labels, metric, sample_weight=None):
+    if api == "stateless":
+        return np.asarray(
+            pls.stateless_cross_validate(X, Y, 3, val_idx, metric, sample_weight)
+        )
+    res = pls.cross_validate(
+        X, Y, 3, labels, metric, sample_weight=sample_weight, show_progress=False
+    )
+    return np.stack([np.asarray(res[f]) for f in sorted(res)])
+
+
+@pytest.mark.parametrize("api", ["stateless", "cross_validate"])
+def test_jax_fast_cv_compile_cache_keeps_the_latest_metric_per_settings(api, monkeypatch):
+    """The internal compile caches keep one program per settings, for the most recently
+    used metric function: a new function per call compiles anew and is freed when the
+    next call replaces it, switching functions recompiles (with the new function's
+    results), and the same object or the same bound method reuses the program. An
+    equal but distinct object compiles anew, so a mutated callable never leaks its
+    old program into a new object, and no user ``__eq__`` is called. The most recently
+    used settings are kept (least recently used evicted; 4 here instead of 64, so that
+    the evicting `ddof` stays below the training-set size). JIT is forced on."""
+    import dataclasses
     import gc
     import weakref
 
-    import ikpls.fast_cross_validation.jax as jax_fcv_module
+    from ikpls._impl import compile_cache
 
-    X, Y, val_idx, _, _ = _small_jax_problem()
+    monkeypatch.setattr(compile_cache, "_MAX_CACHED_SETTINGS", 4)
+
+    X, Y, val_idx, labels, _ = _small_jax_problem()
     pls = JaxFastCVPLS(algorithm=2)
-    maxsize = jax_fcv_module._compiled_stateless_body.cache_info().maxsize
-    refs = []
-    with jax.disable_jit(False):
-        for _ in range(maxsize + 5):
-            def metric(Y_true, Y_pred):
-                return _jax_mse_per_component(Y_true, Y_pred)
+    n_traces = []
 
+    def call(metric, instance=pls):
+        return _fast_cv_call(api, instance, X, Y, val_idx, labels, metric)
+
+    with jax.disable_jit(False):
+        refs = []
+        for _ in range(4):  # a new function per call
+            metric = _counting_metric(n_traces)
             refs.append(weakref.ref(metric))
-            pls.stateless_cross_validate(X, Y, 3, val_idx, metric)
+            call(metric)
             del metric
         gc.collect()
-        assert sum(r() is not None for r in refs) <= maxsize
+        assert len(n_traces) == 4
+        assert [r() is not None for r in refs] == [False, False, False, True]
+        mse = call(_jax_mse_per_component)  # replaces the last per-call function
+        gc.collect()
+        assert refs[-1]() is None
 
+        once, twice = _counting_metric(n_traces), _counting_metric(n_traces, 2.0)
+        expected = ((once, 5, 1.0), (once, 5, 1.0), (twice, 6, 2.0), (once, 7, 1.0))
+        for metric, traces_after, scale in expected:
+            assert_allclose(call(metric), scale * mse, rtol=1e-12, atol=1e-14)
+            assert len(n_traces) == traces_after
+
+        @dataclasses.dataclass
+        class Power:  # unhashable; equal to another instance with the same power
+            power: float
+
+            def __call__(self, Y_true, Y_pred, weights=None):
+                n_traces.append(1)
+                return jnp.mean(jnp.abs(Y_true - Y_pred) ** self.power, axis=-2)
+
+            def method(self, Y_true, Y_pred, weights=None):
+                return self(Y_true, Y_pred, weights)
+
+        class RaisingEq:  # an __eq__ that fails against anything else
+            def __eq__(self, other):
+                return self.missing == other.missing
+
+            __hash__ = object.__hash__
+
+            def __call__(self, Y_true, Y_pred, weights=None):
+                return _jax_mse_per_component(Y_true, Y_pred, weights)
+
+        squared = Power(2.0)
+        assert_allclose(call(squared), mse, rtol=1e-12, atol=1e-14)  # trace 8
+        squared.power = 1.0  # mutating the same object: fixed at its first trace
+        assert_allclose(call(squared), mse, rtol=1e-12, atol=1e-14)
+        absolute = call(Power(1.0))  # equal to the mutated one, but compiled anew
+        assert len(n_traces) == 9
+        assert not np.allclose(absolute, mse)
+        assert_allclose(call(RaisingEq()), mse, rtol=1e-12, atol=1e-14)
+        for _ in range(2):
+            call(squared.method)  # a new bound method object on every access
+        assert len(n_traces) == 10
+
+        # The least recently used settings are evicted beyond the 4 kept.
+        n_kept = compile_cache._MAX_CACHED_SETTINGS
+        metric = _counting_metric(n_traces)
+        for ddof in range(n_kept):
+            call(metric, JaxFastCVPLS(algorithm=2, ddof=ddof))
+        traced = len(n_traces)
+        call(metric, JaxFastCVPLS(algorithm=2, ddof=0))  # a hit refreshes its recency
+        call(metric, JaxFastCVPLS(algorithm=2, ddof=n_kept))  # evicts ddof=1
+        assert len(n_traces) == traced + 1
+        call(metric, JaxFastCVPLS(algorithm=2, ddof=0))
+        assert len(n_traces) == traced + 1
+        call(metric, JaxFastCVPLS(algorithm=2, ddof=1))
+        assert len(n_traces) == traced + 2
+
+
+@pytest.mark.parametrize("api", ["stateless", "cross_validate"])
+def test_jax_fast_cv_compile_cache_keeps_weighted_and_unweighted_apart(api):
+    """Weighted and unweighted calls have their own cached programs, so alternating
+    between an unweighted and a weighted metric function (which take different
+    arguments) compiles each only once. JIT is forced on."""
+    X, Y, val_idx, labels, w = _small_jax_problem()
+    pls = JaxFastCVPLS(algorithm=2)
+    n_traces = []
+    mse, wmse = _counting_metric(n_traces), _counting_metric(n_traces)
+    with jax.disable_jit(False):
+        for _ in range(3):
+            _fast_cv_call(api, pls, X, Y, val_idx, labels, mse)
+            _fast_cv_call(api, pls, X, Y, val_idx, labels, wmse, sample_weight=w)
+    assert len(n_traces) == 2
+
+
+@pytest.mark.parametrize("api", ["stateless", "cross_validate"])
+def test_jax_fast_cv_compile_cache_keys_class_and_all_settings(api):
+    """Cached programs are keyed by the class and by all constructor arguments, also
+    those a subclass forwards to the base class through ``**kwargs``: a subclass with
+    the same arguments but other predictions, and a ``**kwargs`` subclass with
+    non-default base arguments, get their own correct programs. JIT is forced on."""
+    X, Y, val_idx, labels, _ = _small_jax_problem()
+    base_kwargs = dict(algorithm=2, scale_X=False, scale_Y=False)
+
+    def call(instance):
+        return _fast_cv_call(api, instance, X, Y, val_idx, labels, _mean_prediction)
+
+    with jax.disable_jit(False):
+        base = call(JaxFastCVPLS(**base_kwargs))
+        assert_allclose(call(_DoubledJaxFastCVPLS(**base_kwargs)), 2 * base, rtol=1e-12)
+        assert_allclose(
+            call(_ShrunkJaxFastCVPLS(0.5, **base_kwargs)), 0.5 * base, rtol=1e-12
+        )
+        scaled = call(JaxFastCVPLS(algorithm=2))
+        assert not np.allclose(scaled, base)
+        assert_allclose(call(_ShrunkJaxFastCVPLS(0.5, algorithm=2)), 0.5 * scaled)
+
+
+def test_jax_fast_cv_compiled_metric_may_hold_tracers_of_the_callers_jit():
+    """A metric object holding traced values of the caller's ``jax.jit`` (e.g. a pytree
+    dataclass built inside it) is never compared with the cached one, so later traces
+    (new shapes, another jit) work. JIT is forced on."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Scaled:
+        c: jax.Array
+
+        def __call__(self, Y_true, Y_pred):
+            return self.c * _jax_mse_per_component(Y_true, Y_pred)
+
+    jax.tree_util.register_dataclass(Scaled, data_fields=["c"], meta_fields=[])
+    X, Y, val_idx, _, _ = _small_jax_problem()
+    pls = JaxFastCVPLS(algorithm=2)
+    with jax.disable_jit(False):
+        mse = np.asarray(
+            pls.stateless_cross_validate(X, Y, 3, val_idx, _jax_mse_per_component)
+        )
+
+        def run(x, y, c):
+            return pls.stateless_cross_validate(x, y, 3, val_idx, Scaled(c))
+
+        assert_allclose(np.asarray(jax.jit(run)(X, Y, 2.0)), 2 * mse, rtol=1e-12)
+        assert jax.jit(run)(X[:, :5], Y, 2.0).shape == mse.shape  # a new trace
+        assert_allclose(np.asarray(jax.jit(run)(X, Y, 3.0)), 3 * mse, rtol=1e-12)
+
+
+def test_jax_fast_cv_stateless_unhashable_settings_run_unjitted():
+    """An instance with an unhashable constructor argument (which cannot key the
+    compile cache) runs un-jitted, so its metric runs on every call, and gives the
+    same results."""
+    X, Y, val_idx, _, _ = _small_jax_problem()
+    pls = JaxFastCVPLS(algorithm=2)
+    n_traces = []
+    metric = _counting_metric(n_traces)
+    with jax.disable_jit(False):
         ref = np.asarray(
             pls.stateless_cross_validate(X, Y, 3, val_idx, _jax_mse_per_component)
         )
         unhashable = _ListArgJaxFastCVPLS(tags=["a", "b"], algorithm=2)
-        out = unhashable.stateless_cross_validate(X, Y, 3, val_idx, _jax_mse_per_component)
+        for calls in (1, 2):
+            out = unhashable.stateless_cross_validate(X, Y, 3, val_idx, metric)
+            assert_allclose(np.asarray(out), ref, rtol=1e-12, atol=1e-14)
+            assert len(n_traces) == calls
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+def test_jax_fast_cv_cross_validate_reuses_compiled_program(algorithm):
+    """`cross_validate` passes the fitted matrices to a cached compiled program, so a
+    repeated call with the same shapes, settings, `metric_function` and `A` reuses it
+    without tracing again, also with new data and from a new instance, and gives the
+    results of the uncached path that an instance with unhashable settings takes.
+    Folds of two sizes and `batch_size` give several compiled shapes. JIT is forced
+    on."""
+    n_traces = []
+    metric = _counting_metric(n_traces)
+    rng = np.random.default_rng(14)
+    N, K, M, A = 41, 6, 2, 4
+    folds = np.arange(N) % 4  # validation sets of 11, 10, 10 and 10 samples
+    with jax.disable_jit(False):
+        for weighted in (False, True):
+            for repeat in range(2):  # new data with the same shapes
+                X = rng.standard_normal((N, K))
+                Y = rng.standard_normal((N, M))
+                w = rng.uniform(0.5, 2.0, size=N) if weighted else None
+                kwargs = dict(sample_weight=w, batch_size=2, show_progress=False)
+                traced = len(n_traces)
+                res = JaxFastCVPLS(algorithm=algorithm).cross_validate(
+                    X, Y, A, folds, metric, **kwargs
+                )
+                if repeat:
+                    assert len(n_traces) == traced
+                ref = _ListArgJaxFastCVPLS(
+                    tags=["a"], algorithm=algorithm
+                ).cross_validate(X, Y, A, folds, _jax_mse_per_component, **kwargs)
+                for f in range(4):
+                    assert_allclose(
+                        np.asarray(res[f]), np.asarray(ref[f]), rtol=1e-10, atol=1e-12
+                    )
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+def test_jax_predict_uses_the_latest_fit(algorithm):
+    """`ikpls.jax.PLS.predict` predicts with the instance's latest fit, also after the
+    instance is fitted again with new data of the same shapes, for one and for all
+    numbers of components. JIT is forced on."""
+    from ikpls.jax import PLS as JaxPLS
+
+    rng = np.random.default_rng(15)
+    X1, X2, Xq = (rng.standard_normal((n, 8)) for n in (50, 50, 3))
+    Y1, Y2 = rng.standard_normal((50, 2)), rng.standard_normal((50, 2))
+    with jax.disable_jit(False):
+        pls = JaxPLS(algorithm=algorithm)
+        for n_components in (3, None):
+            for X, Y in ((X1, Y1), (X2, Y2), (X1, Y1)):
+                pls.fit(X, Y, 5)
+                fresh = JaxPLS(algorithm=algorithm)
+                fresh.fit(X, Y, 5)
+                assert_allclose(
+                    np.asarray(pls.predict(Xq, n_components)),
+                    np.asarray(fresh.predict(Xq, n_components)),
+                    rtol=1e-12,
+                    atol=1e-14,
+                )
+
+
+class _DoubledJaxPLS(JAX_Alg_2):
+    """A JAX PLS subclass with the same constructor arguments but other predictions."""
+
+    def stateless_predict(self, *args, **kwargs):
+        return 2 * super().stateless_predict(*args, **kwargs)
+
+
+class _ShrunkJaxPLS(JAX_Alg_2):
+    """A JAX PLS subclass forwarding the base constructor arguments via ``**kwargs``."""
+
+    def __init__(self, shrink, **kwargs):
+        super().__init__(**kwargs)
+        self.shrink = shrink
+
+    def stateless_predict(self, *args, **kwargs):
+        return (1 - self.shrink) * super().stateless_predict(*args, **kwargs)
+
+
+def _jax_cv_call(pls, X, Y, labels, metric, preprocessing=None, sample_weight=None):
+    res = pls.cross_validate(
+        X,
+        Y,
+        3,
+        labels,
+        metric,
+        ["m"],
+        preprocessing_function=preprocessing,
+        sample_weight=sample_weight,
+        show_progress=False,
+    )
+    return np.asarray(res["m"])
+
+
+@pytest.mark.parametrize("algorithm", [1, 2])
+def test_jax_cross_validate_reuses_compiled_program(algorithm):
+    """`ikpls.jax.PLS.cross_validate` passes the data to a cached compiled program, so
+    a repeated call with the same shapes, settings, functions and `A` reuses it
+    without tracing again, also with new data and from a new instance, and gives the
+    results of the uncached path, which an instance with unhashable settings takes
+    and which traces on every call. Folds of two sizes and `batch_size` give several
+    compiled shapes. JIT is forced on."""
+    cls = {1: JAX_Alg_1, 2: JAX_Alg_2}[algorithm]
+
+    class ListArg(cls):  # an unhashable constructor argument
+        def __init__(self, tags=(), **kwargs):
+            super().__init__(**kwargs)
+            self.tags = list(tags)
+
+    n_traces = []
+    metric = _counting_metric(n_traces)
+    uncached_traces = []
+    uncached_metric = _counting_metric(uncached_traces)
+    rng = np.random.default_rng(14)
+    N, K, M, A = 41, 6, 2, 4
+    folds = np.arange(N) % 4  # validation sets of 11, 10, 10 and 10 samples
+    with jax.disable_jit(False):
+        for weighted in (False, True):
+            for repeat in range(2):  # new data with the same shapes
+                X = rng.standard_normal((N, K))
+                Y = rng.standard_normal((N, M))
+                w = rng.uniform(0.5, 2.0, size=N) if weighted else None
+                kwargs = dict(sample_weight=w, batch_size=2, show_progress=False)
+                traced = len(n_traces)
+                res = cls().cross_validate(X, Y, A, folds, metric, ["m"], **kwargs)
+                if repeat:
+                    assert len(n_traces) == traced
+                uncached = len(uncached_traces)
+                ref = ListArg(tags=["a"]).cross_validate(
+                    X, Y, A, folds, uncached_metric, ["m"], **kwargs
+                )
+                assert len(uncached_traces) > uncached
+                assert_allclose(
+                    np.asarray(res["m"]), np.asarray(ref["m"]), rtol=1e-10, atol=1e-12
+                )
+
+
+def test_jax_cross_validate_compile_cache_keeps_the_latest_functions():
+    """Per settings, `ikpls.jax.PLS.cross_validate` keeps the program for the most
+    recently used metric and preprocessing functions, matched by identity: the same
+    functions reuse it, a new or switched function recompiles with its own results,
+    and a replaced function is freed. Unhashable functions work too. Weighted and
+    unweighted calls have their own programs, so alternating between them compiles
+    each once. JIT is forced on."""
+    import dataclasses
+    import gc
+    import weakref
+
+    X, Y, _, labels, w = _small_jax_problem()
+    pls = JAX_Alg_2()
+    n_traces = []
+
+    def doubled_y(X_train, Y_train, X_val, Y_val, *weights):
+        n_traces.append(1)
+        return X_train, 2 * Y_train, X_val, 2 * Y_val
+
+    with jax.disable_jit(False):
+        refs = []
+        for _ in range(3):  # a new function per call
+            metric = _counting_metric(n_traces)
+            refs.append(weakref.ref(metric))
+            _jax_cv_call(pls, X, Y, labels, metric)
+            del metric
+        gc.collect()
+        assert len(n_traces) == 3
+        assert [r() is not None for r in refs] == [False, False, True]
+        mse = _jax_cv_call(pls, X, Y, labels, _jax_mse_per_component)
+        gc.collect()
+        assert refs[-1]() is None
+
+        @dataclasses.dataclass
+        class Scaled:  # unhashable
+            factor: float
+
+            def __call__(self, Y_true, Y_pred):
+                return self.factor * _jax_mse_per_component(Y_true, Y_pred)
+
+            def preprocess(self, X_train, Y_train, X_val, Y_val):
+                return X_train, self.factor * Y_train, X_val, self.factor * Y_val
+
+        three = Scaled(3.0)
+        out = _jax_cv_call(pls, X, Y, labels, three, three.preprocess)
+        assert_allclose(out, 27 * mse, rtol=1e-12, atol=1e-14)
+
+        metric = _counting_metric(n_traces)
+        expected = (  # (preprocessing, traces after the call, MSE factor)
+            (None, 4, 1.0),
+            (None, 4, 1.0),
+            (doubled_y, 6, 4.0),  # traces the metric and the preprocessing
+            (doubled_y, 6, 4.0),
+            (None, 7, 1.0),
+        )
+        for preprocessing, traces_after, factor in expected:
+            out = _jax_cv_call(pls, X, Y, labels, metric, preprocessing)
+            assert_allclose(out, factor * mse, rtol=1e-12, atol=1e-14)
+            assert len(n_traces) == traces_after
+
+        wmse = _counting_metric(n_traces)
+        for _ in range(3):
+            _jax_cv_call(pls, X, Y, labels, metric)
+            _jax_cv_call(pls, X, Y, labels, wmse, sample_weight=w)
+        assert len(n_traces) == 8
+
+
+def test_jax_cross_validate_compile_cache_keys_class_and_all_settings():
+    """`ikpls.jax.PLS.cross_validate`'s cached programs are keyed by the class and by
+    all constructor arguments, also those a subclass forwards to the base class
+    through ``**kwargs``: a subclass with the same arguments but other predictions,
+    and a ``**kwargs`` subclass with non-default base arguments, get their own
+    correct programs. JIT is forced on."""
+    X, Y, _, labels, _ = _small_jax_problem()
+    base_kwargs = dict(scale_X=False, scale_Y=False)
+
+    def call(instance):
+        return _jax_cv_call(instance, X, Y, labels, _mean_prediction)
+
+    with jax.disable_jit(False):
+        base = call(JAX_Alg_2(**base_kwargs))
+        assert_allclose(call(_DoubledJaxPLS(**base_kwargs)), 2 * base, rtol=1e-12)
+        assert_allclose(call(_ShrunkJaxPLS(0.5, **base_kwargs)), 0.5 * base, rtol=1e-12)
+        scaled = call(JAX_Alg_2())
+        assert not np.allclose(scaled, base)
+        assert_allclose(call(_ShrunkJaxPLS(0.5)), 0.5 * scaled, rtol=1e-12)
+
+
+def test_jax_compile_caches_key_settings_by_value_and_type():
+    """Equal settings of different types, which can compute differently (e.g. through
+    JAX's weak typing), key different compiled programs."""
+    for base in (JAX_Alg_2, JaxFastCVPLS):
+
+        class Factor(base):
+            def __init__(self, factor=1, **kwargs):
+                super().__init__(**kwargs)
+                self.factor = factor
+
+        assert Factor(1)._settings() == Factor(1)._settings()
+        assert Factor(1)._settings() != Factor(1.0)._settings()
+        assert Factor(1)._settings() != Factor(np.int64(1))._settings()
+        assert Factor((1, 2))._settings() == Factor((1, 2))._settings()
+        assert Factor((1, 2))._settings() != Factor((1.0, 2))._settings()
+
+
+def _live_pls_counts(cls):
+    """(instances of `cls`, other ``ikpls.jax`` PLS instances, e.g. the fast
+    cross-validation's internal fitters) alive after a garbage collection."""
+    import gc
+
+    from ikpls._impl.jax_base import PLSBase
+
+    gc.collect()
+    objs = gc.get_objects()
+    others = sum(isinstance(o, PLSBase) and not isinstance(o, cls) for o in objs)
+    return sum(isinstance(o, cls) for o in objs), others
+
+
+@pytest.mark.parametrize("api", ["jax", "fast"])
+def test_jax_compile_cache_misses_reuse_the_cached_instance(api, monkeypatch):
+    """A call that misses the compile cache, e.g. with a metric function created per
+    call, builds its program from the instance already kept for the same settings, so
+    JAX's caches, which keep every instance (or, for the fast cross-validation, its
+    internal fitter) a jitted method was traced for, hold one per settings rather than
+    one per call. That holds also after the settings were evicted, here by cycling
+    through 3 settings with 2 kept. JIT is forced on."""
+    from ikpls._impl import compile_cache
+
+    base = JAX_Alg_2 if api == "jax" else JaxFastCVPLS
+
+    class Counted(base):
+        pass
+
+    def call(pls, metric):
+        if api == "jax":
+            return _jax_cv_call(pls, X, Y, labels, metric)
+        return pls.cross_validate(X, Y, 3, labels, metric, show_progress=False)
+
+    X, Y, _, labels, _ = _small_jax_problem()
+    _, others_before = _live_pls_counts(Counted)
+    with jax.disable_jit(False):
+        pls = Counted()
+        for _ in range(4):
+            call(pls, lambda Y_true, Y_pred: _jax_mse_per_component(Y_true, Y_pred))
+        counted, others = _live_pls_counts(Counted)
+        assert counted == 2  # pls + the cached one
+        assert others - others_before <= 1  # at most one new (shared) fitter
+        monkeypatch.setattr(compile_cache, "_MAX_CACHED_SETTINGS", 2)
+        instances = [Counted(ddof=ddof) for ddof in range(3)]
+        for _ in range(3):
+            for instance in instances:
+                call(instance, _jax_mse_per_component)
+        counted, others = _live_pls_counts(Counted)
+        assert counted <= 2 + 2 * len(instances)  # + one cached instance per settings
+        assert others - others_before <= 1
+
+
+class _TenfoldJaxPLS(JAX_Alg_2):
+    """A JAX PLS subclass overriding the public per-fold method."""
+
+    def stateless_fit_predict_eval(self, **kwargs):
+        return 10 * super().stateless_fit_predict_eval(**kwargs)
+
+
+def test_jax_cross_validate_calls_an_overridden_stateless_fit_predict_eval():
+    """`ikpls.jax.PLS.cross_validate` calls a subclass's override of
+    `stateless_fit_predict_eval` for every fold, with JIT on and off, and a method
+    patched onto the base class."""
+    X, Y, _, labels, _ = _small_jax_problem()
+    base = _jax_cv_call(JAX_Alg_2(), X, Y, labels, _jax_mse_per_component)
+    for disable_jit in (True, False):
+        with jax.disable_jit(disable_jit):
+            out = _jax_cv_call(_TenfoldJaxPLS(), X, Y, labels, _jax_mse_per_component)
+        assert_allclose(out, 10 * base, rtol=1e-12)
+    # A method patched onto the base class counts as an override too.
+    from unittest import mock
+
+    from ikpls._impl.jax_base import PLSBase
+
+    original = PLSBase.stateless_fit_predict_eval
+    calls = []
+
+    def spy(self, **kwargs):
+        calls.append(1)
+        return original(self, **kwargs)
+
+    def mse(Y_true, Y_pred):  # a new function: traced anew, also with JIT on
+        return _jax_mse_per_component(Y_true, Y_pred)
+
+    with mock.patch.object(PLSBase, "stateless_fit_predict_eval", spy):
+        out = _jax_cv_call(JAX_Alg_2(), X, Y, labels, mse)
+    assert calls
+    assert_allclose(out, base, rtol=1e-12)
+
+
+class _DoubledPredictJaxPLS(JAX_Alg_2):
+    """A JAX PLS subclass overriding `stateless_predict`."""
+
+    def stateless_predict(self, X, B, n_components=None, *stats):
+        return 2 * super().stateless_predict(X, B, n_components, *stats)
+
+
+def test_jax_predict_equals_stateless_predict_and_calls_an_override():
+    """`ikpls.jax.PLS.predict`, which computes its product for all components as an
+    einsum, gives the predictions of `stateless_predict` with the fitted matrices, for
+    a few samples (centred) and for many (folded into B), and calls a subclass's
+    override of `stateless_predict` instead, with JIT on and off."""
+    X, Y, _, _, _ = _small_jax_problem()
+    for disable_jit in (True, False):
+        with jax.disable_jit(disable_jit):
+            pls = JAX_Alg_2().fit(X, Y, 3)
+            doubled = _DoubledPredictJaxPLS().fit(X, Y, 3)
+            stats = (pls.X_mean, pls.X_std, pls.Y_mean, pls.Y_std)
+            for X_pred in (X[:5], X):
+                for n_components in (None, 2):
+                    ref = np.asarray(
+                        pls.stateless_predict(X_pred, pls.B, n_components, *stats)
+                    )
+                    out = np.asarray(pls.predict(X_pred, n_components))
+                    assert_allclose(out, ref, rtol=1e-12, atol=1e-14)
+                    out = np.asarray(doubled.predict(X_pred, n_components))
+                    assert_allclose(out, 2 * ref, rtol=1e-12, atol=1e-14)
+
+
+def test_jax_predict_with_symbolic_rows_and_undocumented_shapes():
+    """`ikpls.jax.PLS.predict` and `stateless_predict` export with a symbolic number of
+    samples, and predict for a 1-D X and with 1-D means and standard deviations, from
+    centred X as before (none of them is folded into B; with K == M, a 1-D X_std
+    folded into B would broadcast along M without an error). `predict` calls a
+    `stateless_predict` patched onto the instance."""
+    from unittest import mock
+
+    X, Y, _, _, _ = _small_jax_problem(N=100, K=3, M=3)  # enough rows to fold
+    pls = JAX_Alg_2().fit(X, Y, 3)
+    stats = (pls.X_mean, pls.X_std, pls.Y_mean, pls.Y_std)
+    flat_stats = [s.reshape(-1) for s in stats]
+    (n,) = jax.export.symbolic_shape("n")
+    rows = jax.ShapeDtypeStruct((n, X.shape[1]), X.dtype)
+    for n_components in (None, 2):
+        ref = np.asarray(pls.stateless_predict(X, pls.B, n_components, *stats))
+        with jax.disable_jit(False):
+            for f in (
+                lambda x: pls.predict(x, n_components),
+                lambda x: pls.stateless_predict(x, pls.B, n_components, *stats),
+            ):
+                exported = jax.export.export(jax.jit(f))(rows)
+                assert_allclose(np.asarray(exported.call(X)), ref, rtol=1e-12)
+        out = pls.stateless_predict(X, pls.B, n_components, *flat_stats)
         assert_allclose(np.asarray(out), ref, rtol=1e-12, atol=1e-14)
+        out = pls.predict(X[0], n_components)  # centred to a (1, K) row
+        assert_allclose(np.asarray(out), ref[..., :1, :], rtol=1e-12, atol=1e-14)
+    # Without X statistics, a 1-D X stays 1-D: (K,) @ (A, K, M) -> (A, M).
+    raw = JAX_Alg_2(center_X=False, scale_X=False).fit(X, Y, 3)
+    ref = X[0] @ np.asarray(raw.B) * np.asarray(raw.Y_std) + np.asarray(raw.Y_mean)
+    assert_allclose(np.asarray(raw.predict(X[0])), ref, rtol=1e-12, atol=1e-14)
+    # A 0-d statistic, and a 1-D B, broadcast as before.
+    two = jnp.asarray(2.0)
+    Xc = (X - np.asarray(pls.X_mean)) / 2.0
+    ref = Xc @ np.asarray(pls.B[0]) * np.asarray(pls.Y_std) + np.asarray(pls.Y_mean)
+    out = pls.stateless_predict(X, pls.B, 1, pls.X_mean, two, pls.Y_mean, pls.Y_std)
+    assert_allclose(np.asarray(out), ref, rtol=1e-12, atol=1e-14)
+    out = pls.stateless_predict(X, pls.B[0, :, 0], None, pls.X_mean, two, None, None)
+    assert_allclose(np.asarray(out), Xc @ np.asarray(pls.B[0, :, 0]), rtol=1e-12)
+    # A 1-D X of enough numbers to fold is centred to a (1, K) row, not folded.
+    X, Y, _, _, _ = _small_jax_problem(N=40, K=30, M=1)  # K >= 8 * A * M
+    wide = JAX_Alg_2().fit(X, Y, 2)
+    for n_components in (None, 1):
+        out = np.asarray(wide.predict(X[0], n_components))
+        ref = np.asarray(wide.predict(X[:1], n_components))
+        assert out.shape == ref.shape
+        assert_allclose(out, ref, rtol=1e-12, atol=1e-14)
+    patched = jnp.zeros(1)
+    with mock.patch.object(pls, "stateless_predict", return_value=patched):
+        assert pls.predict(X) is patched
 
 
 def test_jax_fast_cv_stateless_rejects_invalid_inputs():
@@ -1016,26 +1739,20 @@ def test_jax_fast_cv_stateless_weighted_calls_compile_and_check_concrete_weights
     """Weighted eager calls take the internally compiled path and match the un-jitted
     path and `cross_validate`; concrete weights closed over inside the caller's jax.jit
     work, and their degenerate folds are rejected there. JIT is forced on."""
-    import dataclasses
-
-    import ikpls.fast_cross_validation.jax as jax_fcv_module
-
-    @dataclasses.dataclass
-    class Metric:  # unhashable, so it runs un-jitted
-        def __call__(self, Y_true, Y_pred, weights):
-            return _jax_mse_per_component(Y_true, Y_pred, weights)
-
     X, Y, val_idx, labels, w = _small_jax_problem()
     A = 3
     pls = JaxFastCVPLS(algorithm=1)
-    cache = jax_fcv_module._compiled_stateless_body
+    n_traces = []
+    metric = _counting_metric(n_traces)
     with jax.disable_jit(False):
-        calls = cache.cache_info().hits + cache.cache_info().misses
-        compiled = np.asarray(
-            pls.stateless_cross_validate(X, Y, A, val_idx, _jax_mse_per_component, w)
+        for _ in range(2):  # compiled once, then reused
+            compiled = np.asarray(pls.stateless_cross_validate(X, Y, A, val_idx, metric, w))
+        assert len(n_traces) == 1
+        unjitted = np.asarray(
+            _ListArgJaxFastCVPLS(tags=["a"], algorithm=1).stateless_cross_validate(
+                X, Y, A, val_idx, _jax_mse_per_component, w
+            )
         )
-        assert cache.cache_info().hits + cache.cache_info().misses == calls + 1
-        unjitted = np.asarray(pls.stateless_cross_validate(X, Y, A, val_idx, Metric(), w))
         via_cv = pls.cross_validate(
             X, Y, A, labels, _jax_mse_per_component, sample_weight=w,
             show_progress=False,
