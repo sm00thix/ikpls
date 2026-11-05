@@ -17,15 +17,17 @@ Two entry points are provided:
 * ``cross_validate``: the stateful counterpart of
   ``ikpls.fast_cross_validation.numpy.PLS.cross_validate`` for a SINGLE dataset. It
   accepts arbitrary (possibly size-imbalanced) fold labels and returns a dict mapping
-  each fold to its metric.
+  each fold to its metric. Its per-fold computation is compiled per combination of
+  input shapes, settings and `A` for the most recently used `metric_function`, and
+  later calls with the same function reuse it.
 * ``stateless_cross_validate``: a purely functional variant that takes the validation
   indices of equally sized folds as a 2-D array and returns the metrics stacked over the
   folds. It is ``jax.jit``- and ``jax.vmap``-able, so MANY independent datasets (e.g. one
-  local model per sample, per pixel, or per experimental condition) can be
-  cross-validated at once by ``jax.vmap``-ing it over a stack of datasets -- the fast
-  cross-validation analogue of ``ikpls.jax.PLS.stateless_fit``. Like ``stateless_fit``
-  it is ``jax.jit``-compiled internally (unweighted calls with a hashable
-  `metric_function`), so eager calls are fast too.
+  local model per sample, per pixel, or per experimental condition), each with its own
+  folds and, optionally, its own sample weights, can be cross-validated at once by
+  ``jax.vmap``-ing it over a stack of datasets -- the fast cross-validation analogue of
+  ``ikpls.jax.PLS.stateless_fit``. Like ``stateless_fit`` it is ``jax.jit``-compiled
+  internally, so eager calls are fast too.
 
 Both Improved Kernel PLS Algorithm #1 and #2 are supported, mirroring
 ``ikpls.fast_cross_validation.numpy``:
@@ -47,14 +49,13 @@ Note that the JAX implementations do not emit any underflow warning, in any path
 (single ``fit`` or cross-validation). Degenerate folds (training sets with too few
 non-zero weights to compute centering/scaling statistics) are still rejected up-front
 with a ``ValueError`` before the vmapped computation (by ``stateless_cross_validate``
-only when its `validation_indices` are concrete; see its docstring).
+only when its `validation_indices` and `sample_weight` are concrete; see its docstring).
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
 """
 
 import functools
-import inspect
 import operator
 from collections import defaultdict
 from collections.abc import Callable, Hashable
@@ -68,43 +69,112 @@ from cvmatrix.partitioner import Partitioner
 from jax.typing import ArrayLike, DTypeLike
 from tqdm import tqdm
 
+from ikpls._impl.compile_cache import _CompiledCache, constructor_settings
 from ikpls._impl.jax_alg_1 import PLS as _JaxAlg1
 from ikpls._impl.jax_alg_2 import PLS as _JaxAlg2
-
-_TRACED_WEIGHTS_MSG = (
-    "`sample_weight` must be None under jax.jit tracing (as a traced argument or a "
-    "concrete array closed over under jax.jit): the cvmatrix backend validates the "
-    "weights host-side. Call eagerly, use a plain jax.vmap with one concrete shared "
-    "weight vector, or use `cross_validate`."
-)
+from ikpls._impl.prediction import predict as _predict
 
 
-@functools.lru_cache(maxsize=64)
-def _compiled_stateless_body(
-    cls: type, settings: tuple, metric_function: Callable[..., Any]
+def _new_fitter(algorithm: int, dtype: DTypeLike) -> Any:
+    """The internal fitter: fits B from training matrices that are already centered and
+    scaled, so it applies no centering or scaling."""
+    fitter_cls = _JaxAlg1 if algorithm == 1 else _JaxAlg2
+    return fitter_cls(
+        center_X=False, center_Y=False, scale_X=False, scale_Y=False, dtype=dtype
+    )
+
+
+@functools.lru_cache(maxsize=None)
+def _shared_fitter(algorithm: int, dtype_type: type, dtype: DTypeLike) -> Any:
+    """One internal fitter per algorithm and dtype, shared by all instances: JAX's
+    caches keep every fitter the fold computations were traced with, so a fitter per
+    instance would keep one per instance. It holds nothing but these settings."""
+    return _new_fitter(algorithm, dtype)
+
+
+def _build_stateless_body(
+    pls: Any, metric_function: Callable[..., Any]
 ) -> Callable[..., Any]:
-    """
-    The unweighted ``stateless_cross_validate`` body for one (class, constructor
-    settings, `metric_function`), ``jax.jit``-compiled per input shapes/dtypes and `A`.
-    It is keyed by the settings rather than by the instance, so instances stay
-    picklable, copies use their own settings, and changing an instance's settings
-    after a call takes effect. Only the 64 most recently used combinations are kept,
-    so the metric functions (and what they capture) are not retained indefinitely.
-    """
-    pls = cls(**dict(settings))
+    """The ``stateless_cross_validate`` body, ``jax.jit``-compiled per input
+    shapes/dtypes, `A` and whether `sample_weight` is None."""
 
-    def body(X, Y, validation_indices, A):
-        return pls._stateless_body(X, Y, validation_indices, A, metric_function)
+    def body(X, Y, validation_indices, sample_weight, A):
+        return pls._stateless_body(
+            X, Y, validation_indices, A, metric_function, sample_weight
+        )
 
     return jax.jit(body, static_argnames=("A",))
 
 
-def _is_hashable(obj: Any) -> bool:
-    try:
-        hash(obj)
-    except TypeError:
-        return False
-    return True
+class _FittedCVMatrix:
+    """
+    A fitted ``CVMatrix`` as a JAX pytree, so that ``cross_validate`` can pass it to a
+    cached, ``jax.jit``-compiled function as an argument instead of closing over it:
+    its array attributes are the leaves, and its other attributes (settings, shapes,
+    the array module) are static auxiliary data, part of the compilation cache key.
+    """
+
+    def __init__(self, cvm: CVMatrix) -> None:
+        self.cvm = cvm
+
+
+def _flatten_fitted_cvm(fitted: _FittedCVMatrix):
+    attrs = vars(fitted.cvm)
+    names = tuple(k for k, v in attrs.items() if isinstance(v, (jax.Array, np.ndarray)))
+    static = tuple((k, v) for k, v in attrs.items() if k not in names)
+    return [attrs[k] for k in names], (type(fitted.cvm), names, static)
+
+
+def _unflatten_fitted_cvm(aux, leaves) -> _FittedCVMatrix:
+    cvm_type, names, static = aux
+    cvm = object.__new__(cvm_type)  # keeps a subclass from an overridden _make_cvm
+    vars(cvm).update(static)
+    vars(cvm).update(zip(names, leaves))
+    return _FittedCVMatrix(cvm)
+
+
+jax.tree_util.register_pytree_node(
+    _FittedCVMatrix, _flatten_fitted_cvm, _unflatten_fitted_cvm
+)
+
+
+def _build_cv_folds(
+    pls: Any, metric_function: Callable[..., Any]
+) -> Callable[..., Any]:
+    """The per-fold computation of ``cross_validate``: the fold function
+    ``jax.vmap``-ed over a batch of folds, ``jax.jit``-compiled per fitted
+    ``CVMatrix`` structure, input shapes and `A`."""
+
+    def body(fitted, validation_indices, training_indices, A):
+        fold_fn = pls._make_fold_fn(fitted.cvm, A, metric_function)
+        if training_indices is None:
+            return jax.vmap(fold_fn)(validation_indices)
+        return jax.vmap(fold_fn)(validation_indices, training_indices)
+
+    return jax.jit(body, static_argnames=("A",))
+
+
+# Separate caches for weighted and unweighted calls, whose metric functions take
+# different arguments, so alternating between the two does not recompile.
+_stateless_bodies = {w: _CompiledCache(_build_stateless_body) for w in (False, True)}
+_cv_folds = {w: _CompiledCache(_build_cv_folds) for w in (False, True)}
+
+
+def _as_array(a: Any) -> Union[np.ndarray, jax.Array]:
+    return a if isinstance(a, (jax.Array, np.ndarray)) else np.asarray(a)
+
+
+def _dataset_label(index: Iterable[Any]) -> str:
+    index = tuple(int(i) for i in index)
+    return str(index[0] if len(index) == 1 else index)
+
+
+def _fold_location(bad: np.ndarray) -> str:
+    """Names the first True of `bad` (..., n_folds): its fold, and its dataset if any."""
+    *dataset, fold = np.argwhere(bad)[0]
+    if not dataset:
+        return f"Fold {int(fold)}"
+    return f"Dataset {_dataset_label(dataset)}, fold {int(fold)}"
 
 
 def _validation_index_array(
@@ -280,24 +350,37 @@ class PLS:
         return jnp.argsort(is_val, stable=True)[: N - val_idx.shape[0]]
 
     def _make_fitter(self):
-        fitter_cls = _JaxAlg1 if self.algorithm == 1 else _JaxAlg2
-        return fitter_cls(
-            center_X=False,
-            center_Y=False,
-            scale_X=False,
-            scale_Y=False,
-            dtype=self.dtype,
-        )
+        try:
+            return _shared_fitter(self.algorithm, type(self.dtype), self.dtype)
+        except TypeError:  # an unhashable dtype
+            return _new_fitter(self.algorithm, self.dtype)
 
     def _fit_B(
-        self, operand: jax.Array, XTY: jax.Array, A: int, K: int, M: int
+        self,
+        operand: jax.Array,
+        XTY: jax.Array,
+        A: int,
+        K: int,
+        M: int,
+        sample_weight: Optional[jax.Array] = None,
     ) -> jax.Array:
         """
         Compute the (A, K, M) regression-coefficients tensor from a fold's training
         matrices via the algorithm's ``lax.scan`` fit. ``operand`` is the training ``X``
         (N_train, K) for Algorithm #1 or the training ``XTX`` (K, K) for Algorithm #2;
-        ``XTY`` is the training ``XTY`` (K, M). Reverse-mode-differentiable and
-        ``jax.vmap``-safe.
+        ``XTY`` is the training ``XTY`` (K, M). ``sample_weight`` holds the training
+        weights (N_train,) for a weighted Algorithm #1 fit and is None otherwise.
+        Reverse-mode-differentiable and ``jax.vmap``-safe.
+
+        As in ``stateless_fit`` and the NumPy implementation, the coefficients of the
+        last numerically stable component are carried forward: from the first
+        component whose weight norm underflows or whose score norm collapses relative
+        to the largest one so far (e.g. beyond the numerical rank of the training
+        ``X``), every later component repeats the previous coefficients, and if the
+        first component is unstable, all coefficients are zero. ``stateless_fit``
+        applies the same criteria after its loop; here they are tracked inside the
+        loop, which adds fewer operations to compile, as ``cross_validate`` compiles
+        this for every new shape.
         """
         f = self._fitter
         if type(f) is not (_JaxAlg1 if self.algorithm == 1 else _JaxAlg2) or (
@@ -305,20 +388,34 @@ class PLS:
         ):
             f = self._make_fitter()  # `algorithm` or `dtype` changed after construction
         init = (
-            XTY,
-            jnp.zeros((A, K), dtype=self.dtype),
-            jnp.zeros((A, K), dtype=self.dtype),
-            jnp.zeros((K, M), dtype=self.dtype),
+            (
+                XTY,
+                jnp.zeros((A, K), dtype=self.dtype),
+                jnp.zeros((A, K), dtype=self.dtype),
+                jnp.zeros((K, M), dtype=self.dtype),
+            ),
+            jnp.zeros((), dtype=self.dtype),  # running max of the score norms
+            jnp.ones((), dtype=bool),  # whether all components so far are stable
         )
 
-        def body(carry, i):
-            return f._scan_body(operand, M, K, A, carry, i)
+        weight_args = () if sample_weight is None else (sample_weight,)
+        eps = f.eps
 
-        # Both algorithms' scan bodies stack the regression coefficients ``B`` as the
-        # last output element (Algorithm #1: W, P, Q, R, T, norm, B; Algorithm #2:
-        # W, P, Q, R, norm, B), so outs[-1] is B.
-        _, outs = jax.lax.scan(body, init, jnp.arange(A))
-        return outs[-1]
+        def body(carry, i):
+            fit_carry, max_tTt, stable = carry
+            B_prev = fit_carry[-1]
+            fit_carry, outs = f._scan_body(operand, M, K, A, fit_carry, i, *weight_args)
+            # Both algorithms' scan bodies output the score norm ``tTt``, the weight
+            # norm and the regression coefficients ``B`` last (Algorithm #1: w, p, q,
+            # r, t, tTt, norm, B; Algorithm #2: w, p, q, r, tTt, norm, B).
+            tTt, norm, B_i = outs[-3:]
+            max_tTt = jnp.maximum(max_tTt, tTt)
+            stable = stable & ~((jnp.abs(norm) <= eps) | (tTt <= eps * max_tTt))
+            B_i = jnp.where(stable, B_i, B_prev)
+            return (fit_carry[:-1] + (B_i,), max_tTt, stable), B_i
+
+        _, B = jax.lax.scan(body, init, jnp.arange(A))
+        return B
 
     def _predict_on_val(
         self,
@@ -331,30 +428,27 @@ class PLS:
         y_std: Optional[jax.Array],
     ) -> jax.Array:
         """Predict on the held-out rows for all components, undoing train preprocessing."""
-        x_val = cvm.X[val_idx]  # (N_val, K) raw, unweighted
-        if self.center_X:
-            x_val = x_val - x_mean
-        if self.scale_X:
-            x_val = x_val / x_std
-        y_pred = x_val @ B  # (N_val, K) @ (A, K, M) -> (A, N_val, M)
-        if self.scale_Y:
-            y_pred = y_pred * y_std
-        if self.center_Y:
-            y_pred = y_pred + y_mean
-        return y_pred
+        return _predict(  # (N_val, K) raw, unweighted rows @ (A, K, M) -> (A, N_val, M)
+            cvm.X[val_idx],
+            B,
+            x_mean if self.center_X else None,
+            x_std if self.scale_X else None,
+            y_mean if self.center_Y else None,
+            y_std if self.scale_Y else None,
+        )  # the broadcasting matmul: here faster and leaner than `_jax_matmul`
 
     def _fold_predict_alg1(
         self,
         cvm: CVMatrix,
-        sqrt_weights: Optional[jax.Array],
         val_idx: jax.Array,
         train_idx: Optional[jax.Array],
         A: int,
         K: int,
         M: int,
     ) -> jax.Array:
-        """Algorithm #1 per-fold fit + predict (gathers the training rows of ``X``).
-        ``train_idx`` is derived on device from ``val_idx`` when it is None."""
+        """Algorithm #1 per-fold fit + predict (gathers the training rows of ``X``, and
+        of the weights for a weighted fit). ``train_idx`` is derived on device from
+        ``val_idx`` when it is None."""
         xty_t, (x_mean, x_std, y_mean, y_std) = cvm.training_XTY(val_idx)
         if train_idx is None:
             train_idx = self._training_indices(val_idx, cvm.N)
@@ -363,9 +457,8 @@ class PLS:
             x_train = x_train - x_mean
         if self.scale_X:
             x_train = x_train / x_std
-        if sqrt_weights is not None:
-            x_train = x_train * sqrt_weights[train_idx]
-        b = self._fit_B(x_train, xty_t, A, K, M)
+        w_train = None if cvm.weights is None else cvm.weights[train_idx].ravel()
+        b = self._fit_B(x_train, xty_t, A, K, M, w_train)
         return self._predict_on_val(cvm, val_idx, b, x_mean, x_std, y_mean, y_std)
 
     def _fold_predict_alg2(
@@ -388,14 +481,10 @@ class PLS:
         differently under different jit boundaries); ``jax.vmap`` it over a stack of
         validation-index rows. For Algorithm #1 it optionally also takes the fold's
         training indices; ``cross_validate`` computes them on the host, which compiles
-        faster than deriving them on device (it compiles anew on every call).
+        faster than deriving them on device.
         """
         K, M = cvm.K, cvm.M
         has_weights = cvm.weights is not None
-        # Algorithm #1 sqrt-weights the gathered training rows (mirrors a weighted fit).
-        sqrt_weights = (
-            jnp.sqrt(cvm.weights) if (self.algorithm == 1 and has_weights) else None
-        )
 
         def evaluate(val_idx, y_pred):
             # On-device metric: gather the held-out targets (and sample_weight) and apply
@@ -410,9 +499,7 @@ class PLS:
         if self.algorithm == 1:
 
             def fold_fn(val_idx, train_idx=None):
-                y_pred = self._fold_predict_alg1(
-                    cvm, sqrt_weights, val_idx, train_idx, A, K, M
-                )
+                y_pred = self._fold_predict_alg1(cvm, val_idx, train_idx, A, K, M)
                 return evaluate(val_idx, y_pred)
 
         else:
@@ -423,17 +510,18 @@ class PLS:
 
         return fold_fn
 
-    def _validate_folds(
+    def _check_cv_folds(
         self,
         N: int,
         fold_items: Iterable[Tuple[Hashable, np.ndarray]],
-        sample_weight: Optional[np.ndarray],
+        sample_weight: Optional[ArrayLike],
     ) -> None:
         """
-        Host-side pre-flight rejection of degenerate folds. The cvmatrix JAX backend
-        omits the per-fold ``ValueError`` checks while traced by ``jax.vmap``, so they
-        are performed here instead, mirroring the numpy backend's behavior.
-        ``fold_items`` yields ``(fold, validation_indices)`` pairs.
+        Host-side pre-flight rejection of degenerate folds for `cross_validate`. With
+        weights, the cvmatrix JAX backend skips its per-fold ``ValueError`` checks while
+        the folds are traced by ``jax.vmap``, so they are performed here instead,
+        mirroring the numpy backend's behavior. ``fold_items`` yields
+        ``(fold, validation_indices)`` pairs.
         """
         needs_stats = self.center_X or self.center_Y or self.scale_X or self.scale_Y
         if not needs_stats:
@@ -499,33 +587,175 @@ class PLS:
                 f"to compute the standard deviation for scaling with ddof={self.ddof}."
             )
 
-    def _check_stateless_weights(self, sample_weight: ArrayLike, N: int) -> None:
-        w = np.asarray(sample_weight, dtype=self.dtype).ravel()
-        if w.shape[0] != N:
+    def _check_stateless_weights(
+        self, sample_weight: Union[np.ndarray, jax.Array], N: int
+    ) -> None:
+        """
+        The shape of `sample_weight` is checked also when it is traced, its values only
+        when it is concrete: traced weights are the caller's to validate.
+        """
+        if sample_weight.shape not in ((N,), (N, 1)):
             raise ValueError(
-                f"`sample_weight` must have shape (N,) = ({N},); got {w.shape}."
+                f"`sample_weight` must have shape (N,) or (N, 1) with N={N}; got "
+                f"{sample_weight.shape}."
             )
-        if np.any(w < 0):
+        if isinstance(sample_weight, jax.core.Tracer):
+            return
+        if np.any(np.asarray(sample_weight, dtype=self.dtype) < 0):
             raise ValueError("Weights must be non-negative.")
 
     def _check_concrete_folds(
-        self, vi: np.ndarray, N: int, sample_weight: Optional[ArrayLike]
+        self,
+        vi: np.ndarray,
+        N: int,
+        sample_weight: Optional[Union[np.ndarray, jax.Array]],
     ) -> None:
         """
         Host-side rejection of out-of-range, duplicated and degenerate folds. Traced
         indices cannot be checked; the caller is responsible for them, as for
-        cvmatrix's own deferred checks.
+        cvmatrix's own deferred checks. So are the training sets' non-zero weights when
+        the weights are traced.
         """
-        if vi.min() < 0 or vi.max() >= N:
+        self._check_index_values(vi, N)
+        if sample_weight is not None and not isinstance(sample_weight, jax.core.Tracer):
+            w = np.asarray(sample_weight, dtype=self.dtype).reshape(-1)
+            self._check_training_weights(vi, w)
+
+    @staticmethod
+    def _check_index_values(vi: np.ndarray, N: int) -> None:
+        """Concrete indices (..., n_folds, N_val): in range(N), distinct within a fold."""
+        bad = np.any((vi < 0) | (vi >= N), axis=-1)
+        if np.any(bad):
             raise ValueError(
-                f"`validation_indices` contains indices outside range(N) with N={N}."
+                f"{_fold_location(bad)}: `validation_indices` contains indices outside "
+                f"range(N) with N={N}."
             )
-        vi_sorted = np.sort(vi, axis=1)
-        if np.any(vi_sorted[:, 1:] == vi_sorted[:, :-1]):
+        vi_sorted = np.sort(vi, axis=-1)
+        bad = np.any(vi_sorted[..., 1:] == vi_sorted[..., :-1], axis=-1)
+        if np.any(bad):
             raise ValueError(
-                "Each row of `validation_indices` must hold distinct indices."
+                f"{_fold_location(bad)}: each fold's validation indices must be "
+                "distinct."
             )
-        self._validate_folds(N, enumerate(vi), sample_weight)
+
+    def _check_training_weights(self, vi: np.ndarray, w: np.ndarray) -> None:
+        """
+        Each fold's training set needs a non-zero weight for centering or scaling, and
+        more than `ddof` of them for scaling. `vi` (..., n_folds, N_val) holds concrete,
+        valid validation indices and `w` (..., N) the weights cast to `dtype`, with
+        broadcastable leading axes.
+        """
+        if not (self.center_X or self.center_Y or self.scale_X or self.scale_Y):
+            return
+        nonzero = w != 0
+        batch = np.broadcast_shapes(vi.shape[:-2], w.shape[:-1])
+        nonzero_val = np.take_along_axis(
+            np.broadcast_to(nonzero[..., None, :], batch + (vi.shape[-2], w.shape[-1])),
+            np.broadcast_to(vi, batch + vi.shape[-2:]),
+            axis=-1,
+        ).sum(axis=-1)
+        nnz_train = nonzero.sum(axis=-1)[..., None] - nonzero_val  # (..., n_folds)
+        bad = nnz_train == 0
+        if np.any(bad):
+            raise ValueError(
+                f"{_fold_location(bad)}: the training set has no non-zero weights, so "
+                "centering/scaling statistics cannot be computed."
+            )
+        bad = (self.scale_X or self.scale_Y) & (nnz_train <= self.ddof)
+        if np.any(bad):
+            raise ValueError(
+                f"{_fold_location(bad)}: the training set has too few non-zero weights "
+                f"(={nnz_train[tuple(np.argwhere(bad)[0])]}) relative to ddof "
+                f"(={self.ddof}) to compute the sample standard deviation."
+            )
+
+    def validate_folds(
+        self,
+        validation_indices: ArrayLike,
+        N: int,
+        sample_weight: Optional[ArrayLike] = None,
+    ) -> None:
+        """
+        Checks the concrete validation indices and sample weights of one dataset or a
+        stack of datasets on the host, before `stateless_cross_validate` traces them.
+        `stateless_cross_validate` runs these checks itself on concrete inputs, but it
+        cannot check traced ones, e.g. per-dataset folds and weights under
+        ``jax.vmap``, and invalid traced inputs silently give wrong or NaN results. The
+        checks are vectorized over the datasets and use this instance's `center_X`,
+        `center_Y`, `scale_X`, `scale_Y`, `ddof` and `dtype`.
+
+        Parameters
+        ----------
+        validation_indices : Integer array of shape (..., n_folds, N_val)
+            The validation indices of each dataset's folds, as passed to
+            `stateless_cross_validate`. Leading axes, e.g. (B,), index the datasets.
+
+        N : int
+            The number of samples in each dataset.
+
+        sample_weight : Array of shape (..., N) or (..., N, 1), or None, optional, \
+default=None
+            The weights of each dataset's samples. Leading axes must broadcast with
+            those of `validation_indices`, e.g. (N,) for weights shared by all
+            datasets.
+
+        Raises
+        ------
+        ValueError
+            If `validation_indices` is not an integer array of at least two dimensions
+            with ``0 < N_val < N``; if an index is outside ``range(N)`` or repeated
+            within a fold; if each fold's training set of ``N - N_val`` samples is too
+            small to compute the standard deviation with this `ddof`; if
+            `sample_weight` does not have `N` weights per dataset, its leading axes do
+            not broadcast with those of `validation_indices`, or it contains negative
+            values after the cast to `dtype`; or if a fold's training set has no
+            non-zero weights when centering or scaling, or not more than `ddof` of them
+            when scaling. The checks run in this order, and the message of the first
+            failing check names its first failing dataset and fold, or, for negative
+            weights, the index into `sample_weight`.
+        """
+        vi = np.asarray(validation_indices)
+        if vi.ndim < 2 or not np.issubdtype(vi.dtype, np.integer):
+            raise ValueError(
+                "`validation_indices` must be an integer array of shape "
+                f"(..., n_folds, N_val); got shape {vi.shape} and dtype {vi.dtype}."
+            )
+        self._check_stateless_shapes(N, N, vi.shape[-2:])
+        self._check_index_values(vi, N)
+        if sample_weight is not None:
+            self._check_training_weights(
+                vi, self._weights_per_dataset(sample_weight, N, vi)
+            )
+
+    def _weights_per_dataset(
+        self, sample_weight: ArrayLike, N: int, vi: np.ndarray
+    ) -> np.ndarray:
+        """`sample_weight` as checked, non-negative (..., N) weights cast to `dtype`."""
+        w = np.asarray(sample_weight, dtype=self.dtype)
+        if w.ndim >= 2 and w.shape[-2:] == (N, 1):
+            w = w[..., 0]
+        if w.ndim == 0 or w.shape[-1] != N:
+            raise ValueError(
+                f"`sample_weight` must have shape (..., N) or (..., N, 1) with N={N}; "
+                f"got {w.shape}."
+            )
+        try:
+            np.broadcast_shapes(vi.shape[:-2], w.shape[:-1])
+        except ValueError:
+            raise ValueError(
+                f"The leading axes of `sample_weight` {w.shape} and "
+                f"`validation_indices` {vi.shape} must broadcast."
+            ) from None
+        negative = np.any(w < 0, axis=-1)
+        if negative.ndim and np.any(negative):
+            index = ", ".join(str(int(i)) for i in np.argwhere(negative)[0])
+            raise ValueError(
+                f"Weights must be non-negative, but `sample_weight[{index}]` has a "
+                "negative weight."
+            )
+        if np.any(negative):
+            raise ValueError("Weights must be non-negative.")
+        return w
 
     def stateless_cross_validate(
         self,
@@ -542,18 +772,19 @@ class PLS:
         stacked over the folds. This is the functional, ``jax.jit``/``jax.vmap``-able
         counterpart of `cross_validate` (the fast cross-validation analogue of
         ``ikpls.jax.PLS.stateless_fit``): nothing is stored on the instance and the
-        result is a pytree of arrays rather than a dict. Unweighted calls with a hashable
-        `metric_function` are ``jax.jit``-compiled internally (one compilation per
-        settings, input shapes, `A` and `metric_function`; the 64 most recently used
-        settings/`metric_function` combinations are kept compiled), so eager calls run
-        at compiled speed; other calls run un-jitted.
+        result is a pytree of arrays rather than a dict. Calls are ``jax.jit``-compiled
+        internally, once per settings, input shapes, `A` and whether `sample_weight` is
+        given, for the most recently used `metric_function` (see `metric_function`),
+        so eager calls run at compiled speed.
 
         Its main use is cross-validating MANY independent datasets at once: ``jax.vmap``
-        it over a leading dataset axis of `X` (B, N, K), `Y` (B, N, M) and
-        `validation_indices` (B, n_folds, N_val) and wrap the result in ``jax.jit`` so a
-        single compiled program fits all ``B * n_folds`` models together on the
-        CPU/GPU/TPU. A plain Python loop over `cross_validate` would instead pay a host
-        round-trip and a recompilation per dataset.
+        it over a leading dataset axis of `X` (B, N, K), `Y` (B, N, M),
+        `validation_indices` (B, n_folds, N_val) and, optionally, `sample_weight`
+        (B, N) and wrap the result in ``jax.jit`` so a single compiled program fits all
+        ``B * n_folds`` models together on the CPU/GPU/TPU. A plain Python loop over
+        `cross_validate` would instead handle one dataset at a time, with a host
+        round-trip per dataset. In local PLS, for example, each dataset holds the
+        nearest neighbours of one unknown sample, weighted by their distance to it.
 
         Parameters
         ----------
@@ -577,7 +808,8 @@ class PLS:
             closed over inside the caller's ``jax.jit``. When the indices are traced (an
             argument of the caller's ``jax.jit`` or ``jax.vmap``, e.g. per-dataset
             indices) they cannot be checked: an out-of-range or duplicated index then
-            silently corrupts that fold, so validate traced indices beforehand.
+            silently corrupts that fold, so check traced indices beforehand with
+            `validate_folds`.
 
         metric_function : Callable
             Computes a metric from the true ``Y_val`` (N_val, M) and the predicted
@@ -585,20 +817,30 @@ class PLS:
             ``weights_val`` (N_val,) -- returning any pytree of arrays. ``Y_pred``
             contains a prediction for all `A` components. **Must be JAX-traceable**
             (``jax.numpy``-based): it is evaluated on device inside ``jax.vmap`` over
-            the folds. It is part of the internal compilation cache key, so define it
-            once rather than per call (a new function object, e.g. a lambda created
-            per call, recompiles), and values it closes over are captured when it is
-            first compiled. The cache holds the 64 most recently used combinations of
-            settings and `metric_function`, and with them the functions and what
-            they capture. An unhashable callable is not compiled internally.
+            the folds. The internally compiled program is kept for the most recently
+            used `metric_function` per settings (separately for weighted and
+            unweighted calls), matched by identity (the same method of the same object
+            counts as the same). So define it once rather than per call: another
+            object -- a lambda created per call, or a new instance of a callable
+            class, even an equal one -- compiles anew and replaces the program, as
+            does alternating between two functions. To evaluate several metrics,
+            return them all from one function. It is traced when first compiled, so
+            what it reads then -- values it closes over, globals, or its own
+            attributes -- is fixed for later calls with the same function. The
+            function, and what it closes over, stays alive until another function
+            replaces it or its settings are evicted: programs are kept for the 64
+            most recently used settings.
 
-        sample_weight : Array of shape (N,) or None, optional, default=None
+        sample_weight : Array of shape (N,) or (N, 1), or None, optional, default=None
             Weights for each observation. If None, all observations are weighted
-            equally. Must be non-negative. Supported when called eagerly and under a
-            plain ``jax.vmap`` with one concrete weight vector shared by all datasets
-            (closed over, not vmapped). Not supported under ``jax.jit`` or as a traced
-            (vmapped) argument: the cvmatrix backend validates the weights host-side,
-            which requires concrete values; such calls raise a ``ValueError``.
+            equally. Must be non-negative, and each fold's training set needs a non-zero
+            weight when centering or scaling, and more than `ddof` of them when
+            scaling. Concrete weights, including ones closed over inside the caller's
+            ``jax.jit``, are checked host-side (the training sets when
+            `validation_indices` is concrete, too). Traced weights, e.g. one weight
+            vector per dataset under ``jax.vmap``, cannot be checked: invalid ones
+            silently give wrong or NaN results, so check them beforehand with
+            `validate_folds`.
 
         Returns
         -------
@@ -614,20 +856,26 @@ class PLS:
             If `X` and `Y` have different numbers of rows; if `validation_indices` is
             not a rectangular 2-D integer array with ``0 < N_val < N``; if (when
             concrete) it contains out-of-range or, within a row, duplicate indices; if
-            `sample_weight` is traced (a tracer, or a concrete array staged under
-            ``jax.jit``), has the wrong length or contains negative values; if the
-            training-set size ``N - N_val`` is too small for the requested scaling with
-            this `ddof` (checked even under tracing, since it depends on shapes only); if
-            a weighted fold's training set has too few non-zero weights (checked when
-            `validation_indices` is concrete); or if ``dtype`` is 64-bit while
-            ``jax_enable_x64`` is off.
+            `sample_weight` has the wrong shape or (when concrete) contains negative
+            values; if the training-set size ``N - N_val`` is too small for the
+            requested scaling with this `ddof` (checked even under tracing, since it
+            depends on shapes only); if a weighted fold's training set has too few
+            non-zero weights (checked when `validation_indices` and `sample_weight` are
+            concrete); or if ``dtype`` is 64-bit while ``jax_enable_x64`` is off.
 
         Notes
         -----
         Per-fold results agree with `cross_validate` up to floating-point round-off (the
         same per-fold function is used; XLA may fuse operations differently across jit
-        boundaries). Components beyond the numerical rank of `X` are unstable in any
-        implementation and may differ more between the two entry points.
+        boundaries). As in `ikpls.jax.PLS` and the NumPy fast cross-validation, and
+        with the same stability criteria, predictions with more components than a
+        fold's numerically stable ones (e.g. beyond the numerical rank of its training
+        `X`) equal those with its last stable component. A component right at the
+        stability threshold may be classified differently under different round-off.
+        With Algorithm #2, whose score norms come from the downdated ``X^T W X``, the
+        first component past the numerical rank often lies close to the threshold, so
+        either implementation may admit one round-off component there, and their
+        results for more components may then differ.
 
         If all datasets share one split, close over a single concrete (n_folds, N_val)
         `validation_indices` and ``jax.vmap`` over `X` and `Y` only; the fold validity
@@ -636,8 +884,10 @@ class PLS:
         The internally compiled program is built from a new instance constructed from
         this instance's constructor arguments, read from the attributes of the same
         names (the scikit-learn convention). A subclass must follow that convention,
-        as other instance state is not part of the compiled program; if its
-        constructor arguments cannot be read or hashed, the call runs un-jitted.
+        as other instance state is not part of the compiled program. A subclass
+        constructor's ``**kwargs`` stand for its base class's constructor arguments.
+        If the constructor arguments cannot be read or hashed, or a new instance
+        constructed from them does not reproduce them, the call runs un-jitted.
 
         Memory per dataset vmapped together, in elements (float64: 8 bytes each), as a
         rough guide: Algorithm #1 materializes the training rows of every fold, about
@@ -665,58 +915,76 @@ class PLS:
         >>> cv = jax.jit(jax.vmap(lambda x, y, vi: pls.stateless_cross_validate(x, y, A, vi, mse)))
         >>> fold_mse = cv(X, Y, val_idx)  # (B, n_folds, A, M)
         >>> best_A = jnp.argmin(fold_mse.mean(axis=1), axis=1) + 1  # (B, M)
+
+        With one weight vector per dataset, check the concrete weights and folds before
+        they are traced, and use a metric that takes the validation weights:
+
+        >>> W = rng.uniform(0.5, 1.5, size=(B, N))
+        >>> pls.validate_folds(val_idx, N, W)
+        >>> wmse = lambda Y_true, Y_pred, w: jnp.average(
+        ...     (Y_true - Y_pred) ** 2, axis=-2, weights=w
+        ... )  # (A, M)
+        >>> cv_w = jax.jit(jax.vmap(
+        ...     lambda x, y, vi, w: pls.stateless_cross_validate(x, y, A, vi, wmse, w)
+        ... ))
+        >>> fold_wmse = cv_w(X, Y, val_idx, W)  # (B, n_folds, A, M)
         """
-        if isinstance(sample_weight, jax.core.Tracer):
-            raise ValueError(_TRACED_WEIGHTS_MSG)
         self._check_x64()
         A = operator.index(A)  # a static Python int, also when given as a 0-d array
-        if not isinstance(X, (jax.Array, np.ndarray)):
-            X = np.asarray(X)
-        if not isinstance(Y, (jax.Array, np.ndarray)):
-            Y = np.asarray(Y)
+        X = _as_array(X)
+        Y = _as_array(Y)
         # Decide concreteness on the argument as given: inside the caller's jax.jit,
-        # jnp.asarray would stage even a closed-over NumPy array into a tracer.
+        # jnp.asarray would stage even a closed-over NumPy array into a tracer. The
+        # same holds for `sample_weight`, whose checks also skip only actual tracers.
         concrete = not isinstance(validation_indices, jax.core.Tracer)
         vi = _validation_index_array(validation_indices, concrete)
         N = np.shape(X)[0]
         self._check_stateless_shapes(N, np.shape(Y)[0], vi.shape)
         if sample_weight is not None:
+            sample_weight = _as_array(sample_weight)
             self._check_stateless_weights(sample_weight, N)
         if concrete:
             self._check_concrete_folds(vi, N, sample_weight)
         validation_indices = jnp.asarray(validation_indices)
         settings = self._settings()
-        if (
-            sample_weight is None
-            and settings is not None
-            and _is_hashable(metric_function)
-        ):
-            compiled = _compiled_stateless_body(type(self), settings, metric_function)
-            return compiled(X, Y, validation_indices, A=A)
-        # Weighted calls run un-jitted: cvmatrix validates the weights host-side, which
-        # needs concrete values (so they cannot run under a caller's jax.jit either).
-        # So do calls whose settings or metric cannot key the compiled body.
+        compiled = None
+        if settings is not None:
+            cache = _stateless_bodies[sample_weight is not None]
+            compiled = cache.get(type(self), settings, metric_function)
+        if compiled is not None:
+            return compiled(X, Y, validation_indices, sample_weight, A=A)
         return self._stateless_body(
             X, Y, validation_indices, A, metric_function, sample_weight
         )
 
     def _settings(self) -> Optional[tuple]:
+        """The constructor settings keying the compiled programs; see
+        ``constructor_settings``."""
+        return constructor_settings(self)
+
+    def _vmapped_fold_fn(
+        self, cvm: CVMatrix, A: int, metric_function: Callable[..., Any]
+    ) -> Callable[..., Any]:
         """
-        The constructor arguments, read from the attributes of the same names (the
-        scikit-learn convention, also for subclasses), as a hashable key for the
-        compiled body; None if they cannot key it.
+        The jitted per-fold function of `cross_validate`, ``jax.vmap``-ed over a batch
+        of folds, for a fitted ``cvm``. With hashable settings, it is the cached
+        compiled program, reused across calls with the same shapes, settings,
+        `metric_function` and `A`, which takes the fitted matrices as arguments;
+        otherwise, a new ``jax.jit`` that closes over ``cvm``.
         """
-        try:
-            params = inspect.signature(type(self).__init__).parameters.values()
-            settings = tuple(
-                (p.name, getattr(self, p.name))
-                for p in params
-                if p.name != "self" and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
-            )
-            hash(settings)
-        except (AttributeError, TypeError, ValueError):
-            return None
-        return settings
+        settings = self._settings()
+        compiled = None
+        if settings is not None:
+            cache = _cv_folds[cvm.weights is not None]
+            compiled = cache.get(type(self), settings, metric_function)
+        if compiled is None:
+            return jax.jit(jax.vmap(self._make_fold_fn(cvm, A, metric_function)))
+        fitted = _FittedCVMatrix(cvm)
+
+        def vmapped(validation_indices, training_indices=None):
+            return compiled(fitted, validation_indices, training_indices, A=A)
+
+        return vmapped
 
     def _stateless_body(
         self,
@@ -729,13 +997,7 @@ class PLS:
     ) -> Any:
         """Fit the cvmatrix globals and vmap the per-fold function over the folds."""
         cvm = self._make_cvm()
-        try:
-            cvm.fit(X, Y, sample_weight)  # builds the dataset-wide matrices/statistics
-        except jax.errors.TracerBoolConversionError as err:
-            # A concrete `sample_weight` closed over under a caller's jax.jit is staged
-            # into a tracer, which cvmatrix's host-side non-negativity check cannot
-            # inspect.
-            raise ValueError(_TRACED_WEIGHTS_MSG) from err
+        cvm.fit(X, Y, sample_weight)  # builds the dataset-wide matrices/statistics
         fold_fn = self._make_fold_fn(cvm, A, metric_function)
         return jax.vmap(fold_fn)(validation_indices)
 
@@ -776,7 +1038,19 @@ class PLS:
             prediction for all `A` components. **Must be JAX-traceable**
             (``jax.numpy``-based): it is evaluated on device inside ``jax.vmap`` over
             the folds, so only the metric (not the prediction tensor) is transferred
-            back.
+            back. As for `stateless_cross_validate`, the compiled program is kept
+            for the most recently used `metric_function` per settings (separately
+            for weighted and unweighted calls), matched by identity (the same method
+            of the same object counts as the same). So define it once rather than
+            per call: another object -- a lambda created per call, or a new instance
+            of a callable class, even an equal one -- compiles anew and replaces the
+            program, as does alternating between two functions. To evaluate several
+            metrics, return them all from one function. It is traced when first
+            compiled, so what it reads then -- values it closes over, globals, or its
+            own attributes -- is fixed for later calls with the same function. The
+            function, and what it closes over, stays alive until another function
+            replaces it or its settings are evicted: programs are kept for the 64
+            most recently used settings.
 
         sample_weight : Array of shape (N,) or None, optional, default=None
             Weights for each observation. If None, all observations are weighted
@@ -810,9 +1084,20 @@ class PLS:
         leave-one-out and balanced k-fold use a single group, while size-imbalanced
         folds use one group per distinct size.
 
-        To cross-validate many independent datasets at once, ``jax.vmap``
-        `stateless_cross_validate` over a stack of datasets instead of looping over
-        this method (each call here re-traces and re-compiles its fold function).
+        The per-fold computation is compiled per combination of input shapes,
+        settings, `A` and batch shape for the most recently used `metric_function`
+        (see `metric_function`), and later calls with the same function reuse it,
+        also with new data. To cross-validate many
+        independent datasets at once, ``jax.vmap`` `stateless_cross_validate` over a
+        stack of datasets instead of looping over this method, which handles one
+        dataset per call. As for `stateless_cross_validate`, the compiled program is
+        built from a new instance constructed from this instance's constructor
+        arguments, read from the attributes of the same names (the scikit-learn
+        convention). A subclass must follow that convention, as other instance state
+        is not part of the compiled program. A subclass constructor's ``**kwargs``
+        stand for its base class's constructor arguments. If the constructor
+        arguments cannot be read or hashed, or a new instance constructed from them
+        does not reproduce them, each call compiles anew.
 
         See Also
         --------
@@ -828,7 +1113,7 @@ class PLS:
 
         p = Partitioner(folds)
         N = cvm.N  # not self.N: another call on this instance may rebind it
-        self._validate_folds(N, p.folds_dict.items(), sample_weight)
+        self._check_cv_folds(N, p.folds_dict.items(), sample_weight)
 
         # Group folds by validation-set size so vmap sees fixed shapes.
         buckets: dict[int, list] = defaultdict(list)
@@ -836,7 +1121,7 @@ class PLS:
             vi = p.get_validation_indices(fold)
             buckets[int(vi.shape[0])].append((fold, vi))
 
-        vmapped = jax.jit(jax.vmap(self._make_fold_fn(cvm, A, metric_function)))
+        vmapped = self._vmapped_fold_fn(cvm, A, metric_function)
         all_idx = np.arange(N, dtype=int)
 
         n_batches = sum(

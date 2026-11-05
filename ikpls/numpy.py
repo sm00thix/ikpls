@@ -28,6 +28,7 @@ from joblib import Parallel, delayed
 from sklearn.exceptions import NotFittedError
 
 from ikpls._impl.pls_steps import improved_kernel_pls_inner_loop
+from ikpls._impl.prediction import predict as _predict
 from ikpls._impl.r_y_mapping import _R_Y_Mapping
 
 
@@ -700,16 +701,20 @@ class PLS:
             raise NotFittedError(
                 "This model is not fitted yet, call 'fit' with approriate arguments before 'predict'."
             )
-        X, _, _ = self._get_input(copy=True, X=X)
-        X, _ = self._center_scale_X_Y(X=X)
-
-        if n_components is None:
-            Y_pred = X @ self.B
-        else:
-            Y_pred = X @ self.B[n_components - 1]
-
-        _, Y_pred = self._un_center_scale_X_Y(Y=Y_pred)
-        return Y_pred
+        X_input = X
+        X, _, _ = self._get_input(copy=False, X=X)  # copied if needed; see `_predict`
+        B = self.B if n_components is None else self.B[n_components - 1]
+        return _predict(
+            X,
+            B,
+            self.X_mean if self.center_X else None,
+            self.X_std if self.scale_X else None,
+            self.Y_mean if self.center_Y else None,
+            self.Y_std if self.scale_Y else None,
+            in_place=True,
+            # A converted copy is our own. (`is` first: the common case, and cheaper.)
+            overwrite_X=X is not X_input and not np.may_share_memory(X, X_input),
+        )
 
     def transform(
         self,

@@ -148,29 +148,34 @@ class PLS(PLSBase):
         return B, W, P, Q, R, T
 
     @partial(jax.jit, static_argnums=(0,))
-    def _get_sqrt_WX(self, X: jax.Array, sample_weight: jax.Array) -> jax.Array:
+    def _get_sqrt_weights(self, sample_weight: jax.Array) -> jax.Array:
         """
-        Compute the product of the square root of the weights matrix and the predictor
-        matrix.
+        Compute the square roots of the weights, with a zero derivative at a zero
+        weight.
 
         Parameters
         ----------
-        X : Array of shape (N, K)
-            Predictor variables.
-
         sample_weight : Array of shape (N,)
             Weights for each observation.
 
         Returns
         -------
-        sqrt_WX : Array of shape (N, K)
-            Product of the square root of the weights matrix and the predictor matrix.
+        sqrt_weights : Array of shape (N,)
+            Square roots of the weights.
+
+        Notes
+        -----
+        The square root is not differentiable at zero, where its derivative is
+        infinite, so ``jnp.sqrt`` would make the gradients with respect to the weights
+        NaN (0 * inf) wherever a weight is exactly zero, even when the loss does not
+        depend on the weighted scores. The double ``jnp.where`` sets the derivative at
+        a zero weight to zero instead and leaves the values unchanged.
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
-            print(f"_get_sqrt_WX for {self.name} will be JIT compiled...")
-        sample_weight = jnp.expand_dims(sample_weight, axis=1)
-        sqrt_weights_mat = jnp.sqrt(sample_weight)
-        return sqrt_weights_mat * X
+            print(f"_get_sqrt_weights for {self.name} will be JIT compiled...")
+        zero = sample_weight == 0
+        sqrt_weights = jnp.sqrt(jnp.where(zero, 1, sample_weight))
+        return jnp.where(zero, 0, sqrt_weights)
 
     @partial(jax.jit, static_argnums=(0,))
     def _step_1(
@@ -216,6 +221,7 @@ class PLS(PLSBase):
         norm: DTypeLike,
         q: Optional[jax.Array] = None,
         largest_eigval: Optional[jax.Array] = None,
+        sample_weight: Optional[jax.Array] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Perform the fourth step of Improved Kernel PLS Algorithm #1.
@@ -231,6 +237,9 @@ class PLS(PLSBase):
         r : Array of shape (K, 1)
             Intermediate result used in the PLS algorithm.
 
+        sample_weight : Array of shape (N,) or None
+            Weights for each observation.
+
         Returns
         -------
         tTt : float
@@ -243,7 +252,8 @@ class PLS(PLSBase):
             Intermediate result used in the PLS algorithm.
 
         t : Array of shape (N, 1)
-            Intermediate result used in the PLS algorithm.
+            Intermediate result used in the PLS algorithm. These are the unweighted
+            scores ``X @ r``, even if weights are provided.
 
         See Also
         --------
@@ -252,7 +262,11 @@ class PLS(PLSBase):
         if self.verbose and not jax.config.values["jax_disable_jit"]:
             print(f"_step_4 for {self.name} will be JIT compiled...")
         t = X @ r
-        tT = t.T
+        # With weights, tTt = t^T W t and p = X^T W t / tTt. Applying W to the scores
+        # here, instead of scaling the rows of X by sqrt(W) once before the loop, avoids
+        # the square root, whose infinite derivative at a zero weight made the
+        # gradients with respect to the weights NaN.
+        tT = t.T if sample_weight is None else (sample_weight[:, None] * t).T
         tTt = tT @ t
         # Guard against an underflowed component producing NaN loadings: when _step_2
         # zeroes the weight, r is exactly zero, so t = X @ r and tTt = t^T t are
@@ -280,6 +294,7 @@ class PLS(PLSBase):
         A: int,
         carry: Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         i: ArrayLike,
+        sample_weight: Optional[jax.Array] = None,
     ) -> Tuple[
         Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         Tuple[
@@ -297,8 +312,8 @@ class PLS(PLSBase):
         `lax.scan` body for Improved Kernel PLS Algorithm #1: computes a single
         component and appends its outputs to the scan's stacked results.
 
-        The constant operand `X` and the static `M`, `K`, `A` are captured by closure.
-        The carry is ``(XTY, P, R, Bprev)``:
+        The constant operands `X` and `sample_weight` and the static `M`, `K`, `A` are
+        captured by closure. The carry is ``(XTY, P, R, Bprev)``:
         ``XTY`` (K, M) is the deflated cross-covariance, ``P``/``R`` (A, K) are
         the loadings/weights buffers the deflation reads from, and ``Bprev`` (K, M) is
         the previous cumulative regression-coefficient matrix (zero for ``i == 0``).
@@ -306,7 +321,7 @@ class PLS(PLSBase):
         Parameters
         ----------
         X : Array of shape (N, K)
-            Predictor variables (optionally sqrt-weight-scaled).
+            Predictor variables.
 
         M, K, A : int
             Number of response variables, predictor variables, and components (static).
@@ -317,6 +332,9 @@ class PLS(PLSBase):
         i : int
             The current component index (the scan loop variable; traced).
 
+        sample_weight : Array of shape (N,) or None, default=None
+            Weights for each observation.
+
         Returns
         -------
         carry : tuple
@@ -325,7 +343,8 @@ class PLS(PLSBase):
         outputs : tuple of (w (K,), p (K,), q (M,), r (K,), t (N,), tTt (), norm (), b (K, M))
             Per-component outputs, stacked by `lax.scan` along a leading axis of length
             ``A`` to yield W (A, K), P (A, K), Q (A, M), R (A, K), T (A, N), tTt (A,),
-            norms (A,), B (A, K, M). ``tTt`` is the score norm ||t||^2 (the p/q
+            norms (A,), B (A, K, M). ``t`` is the unweighted score vector ``X @ r``.
+            ``tTt`` is the score norm t^T W t, or t^T t without weights (the p/q
             denominator), reused for the max_stable_components diagnostic.
         """
         if self.verbose and not jax.config.values["jax_disable_jit"]:
@@ -337,7 +356,9 @@ class PLS(PLSBase):
         # step 3: masked deflation (fixed-size and reverse-mode differentiable)
         r = self._orthogonal_weight(i, w, P, R, A)
         # step 4
-        tTt, p, q, t = self._step_4(X, XTY, r, M, K, *step_2_res[1:])
+        tTt, p, q, t = self._step_4(
+            X, XTY, r, M, K, *step_2_res[1:], sample_weight=sample_weight
+        )
         # step 5
         XTY = self._step_5(XTY, p, q, tTt)
         # cumulative regression coefficients; Bprev is the zero row for i == 0
@@ -408,7 +429,9 @@ class PLS(PLSBase):
         T : Array of shape (N, A)
             PLS scores matrix of X. IMPORTANT: If weights are provided, these are NOT
             the scores of X but instead weighted scores. In this case, scores can be
-            computerd using transform.
+            computerd using transform. The square root of the weights is not
+            differentiable at zero, so the derivative of the weighted scores of a
+            sample with zero weight with respect to its own weight is taken as zero.
 
         X_mean : Array of shape (1, K) or None
             Mean of X. If centering is not performed, this is None. If weights are
@@ -539,7 +562,9 @@ class PLS(PLSBase):
         T : Array of shape (A, N)
             PLS scores matrix of X. IMPORTANT: If weights are provided, these are NOT
             the scores of X but instead weighted scores. In this case, scores can be
-            computerd using transform.
+            computerd using transform. The square root of the weights is not
+            differentiable at zero, so the derivative of the weighted scores of a
+            sample with zero weight with respect to its own weight is taken as zero.
 
         max_stable_components : int
             The number of leading components that are numerically stable (whose weight
@@ -598,9 +623,6 @@ class PLS(PLSBase):
         # step 1
         XTY = self._step_1(X, Y, sample_weight)
 
-        if sample_weight is not None:
-            X = self._get_sqrt_WX(X, sample_weight)
-
         # steps 2-6: run one component per scan step. Using lax.scan keeps the traced
         # graph O(1) in A (the Python `for` loop unrolled it, making compile time scale
         # linearly with the number of components). Carry = (XTY, P, R, Bprev),
@@ -608,9 +630,14 @@ class PLS(PLSBase):
         init = (XTY, P, R, jnp.zeros((K, M), dtype=self.dtype))
 
         def body(carry, i):
-            return self._scan_body(X, M, K, A, carry, i)
+            return self._scan_body(X, M, K, A, carry, i, sample_weight)
 
         _, (W, P, Q, R, T, tTt, norms, B) = jax.lax.scan(body, init, jnp.arange(A))
+
+        if sample_weight is not None:
+            # The scan returns the unweighted scores X @ r; T holds the weighted scores
+            # sqrt(W) X r.
+            T = T * self._get_sqrt_weights(sample_weight)
 
         # On-device count of numerically stable components (no host callback). A
         # component is unstable if its X-weight norm underflowed below eps (X-Y
