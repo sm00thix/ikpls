@@ -1,41 +1,32 @@
 """
-This script demonstrates local PLS for MANY unknown samples with the NumPy
-implementations of IKPLS. It needs no JAX. It runs the local PLS of our IKPLS 6.3.0
-benchmark, on its synthetic spectra and with its settings: 100,000 local models, each
-on its sample's 200 nearest neighbours, with its number of components (1 to 30)
-chosen by 5-fold cross-validation. ``local_pls_jax.py`` runs the same local PLS with
-JAX and gives the same results.
+This script demonstrates local PLS for many unknown samples with the NumPy
+implementations of IKPLS, with the settings of our IKPLS 6.3.0 benchmark: 100,000 local
+models, each fitted on its sample's 200 nearest neighbours, with its number of
+components (1 to 30) chosen by 5-fold cross-validation. It needs no JAX.
+``local_pls_jax.py`` runs the same local PLS with JAX and gives the same results.
 
 Local PLS predicts each unknown sample with its own PLS model, fitted on the unknown's
 nearest neighbours in a large library of spectra with known reference values (the
-"pool"), with its number of components chosen by cross-validation on the neighbours.
-Here, as in the benchmark, each of the pool's 100,000 spectra in turn plays the
-unknown: its model is fitted on its 200 nearest OTHER spectra, so its prediction can be
-compared with its own reference value. That is 100,000 small, independent models, which
-this script spreads over the CPU cores with joblib:
+"pool"). Here, each of the pool's 100,000 spectra in turn plays the unknown, and its
+model is fitted on its 200 nearest OTHER spectra, so its prediction can be compared with
+its own reference value. The script spreads these 100,000 small models over the CPU
+cores with joblib:
 
-  1. Find each spectrum's 200 nearest other spectra by exact Euclidean distance, with
-     FAISS if it is installed (``pip install faiss-cpu``), as in the benchmark, else
-     with scikit-learn's ``NearestNeighbors``.
-  2. Split each spectrum's neighbours into 5 folds of 40 by Venetian blinds over y:
-     sorted by y, the r-th smallest goes to fold r mod 5.
+  1. Find each spectrum's 200 nearest other spectra, with FAISS if it is installed
+     (``pip install faiss-cpu``), else with scikit-learn.
+  2. Split each spectrum's neighbours into 5 folds by Venetian blinds over y.
   3. Cross-validate every neighbourhood with 1 to 30 components and choose the number
-     of components with the lowest validation MSE averaged over the folds:
+     of components with the lowest validation MSE:
      ``ikpls.fast_cross_validation.numpy.PLS.cross_validate``.
-  4. Refit every neighbourhood on all its 200 neighbours with its number of components
-     and predict its spectrum: ``ikpls.numpy.PLS.fit`` and ``predict``.
+  4. Refit every neighbourhood with its number of components and predict its spectrum:
+     ``ikpls.numpy.PLS.fit`` and ``predict``.
 
-X and y are centred with each training set's means, not scaled. ``K`` selects one of the
-benchmark's two settings: K = 2800 wavelengths with IKPLS Algorithm #1, or K = 100
-(every 28th of them) with Algorithm #2. With FAISS, this script computes the same
-100,000 models as the benchmark, up to floating-point round-off.
-
-Set ``DISTANCE_WEIGHTED = True`` to weight each model's neighbours by their distance to
-its unknown (the benchmark does not): one weight vector per model.
+Set ``K = 2800`` for all wavelengths or ``K = 100`` for every 28th of them, and
+``DISTANCE_WEIGHTED = True`` to weight each model's neighbours by their distance.
 
 Note: requires ikpls 6.3.0 or later; earlier versions print a line for every
-cross-validation. At K = 2800, the pool takes 2.2 GB of memory. Reduce ``N_POOL`` for a
-quicker run.
+cross-validation. Creating the spectra takes about 7 GB of memory. Reduce ``N_POOL`` for
+a quicker run.
 
 Author: Ole-Christian Galbo Engstrøm
 E-mail: ocge@foss.dk
@@ -56,15 +47,7 @@ from ikpls.numpy import PLS as NpPLS
 
 def make_spectra(n: int, K: int = 2800, seed: int = 42):
     """
-    The benchmark's synthetic NIR-like spectra X (n, K) and their property y (n, 1).
-    Four "chemistry" variables are drawn around 12 cluster centres (products), so that
-    neighbourhoods are chemically meaningful. They drive 18 spectral factors, mildly
-    nonlinearly (the variables, their squares and products, and saturating tanh
-    terms), and 22 more factors are independent of them (temperature, particle size,
-    ...). Each factor absorbs in 2 to 5 Gaussian bands. Each spectrum also gets a
-    random offset and slope (scatter), a common baseline and instrument noise. y is a
-    nonlinear function of the chemistry (mean 12, SD 2) plus reference-method noise
-    (SD 0.5).
+    Create a synthetic dataset of NIR-like spectra X (n, K) and a property y (n, 1).
     """
     rng = np.random.default_rng(seed)
     wavelengths = np.linspace(0.0, 1.0, K)
@@ -113,7 +96,7 @@ def nearest_neighbours(X: np.ndarray, k: int):
     else:
         library = "FAISS"
         # FAISS searches in float32. Centring first leaves the distances unchanged but
-        # keeps float32 round-off from reordering near-equidistant neighbours.
+        # reduces their float32 round-off.
         X32 = np.ascontiguousarray(X - X.mean(axis=0), dtype=np.float32)
         index = faiss.IndexFlatL2(X.shape[1])  # Exact (brute-force) search.
         index.add(X32)
@@ -208,14 +191,14 @@ if __name__ == "__main__":
     # per fold) have fewer samples than wavelengths, and Algorithm #2 otherwise. Both
     # give the same results up to floating-point round-off.
     ALGORITHM = 1 if K > N_NEIGHBOURS - N_NEIGHBOURS // N_FOLDS else 2
-    # Worker processes and BLAS threads per worker, as the benchmark chose on a
-    # 16-core CPU with 32 threads: one single-threaded worker per core at K = 100, and
-    # half as many workers with 4 threads each at K = 2800.
+    # Worker processes and BLAS threads per worker, the fastest on a 16-core CPU with
+    # 32 threads: one single-threaded worker per core at K = 100, and half as many
+    # workers with 4 threads each at K = 2800.
     cores = joblib.cpu_count(only_physical_cores=True)
     N_JOBS = cores if K <= 100 else max(cores // 2, 1)
     THREADS = 1 if K <= 100 else max(joblib.cpu_count() // N_JOBS, 1)
     # How many chunks of local models to spread over the workers: many small chunks per
-    # worker, as in the benchmark, so that the workers finish at about the same time.
+    # worker, so that the workers finish at about the same time.
     N_CHUNKS = 32 * N_JOBS
 
     if 2800 % K != 0:
@@ -256,8 +239,8 @@ if __name__ == "__main__":
         tempfile.TemporaryDirectory() as tmp,
         joblib.parallel_config("loky", inner_max_num_threads=THREADS),
     ):
-        # The workers read the pool from a memory-mapped file, as in the benchmark,
-        # instead of joblib copying it to a file for every call.
+        # The workers read the pool from a memory-mapped file, instead of joblib
+        # copying it to a file for every call.
         t0 = time.perf_counter()
         np.save(os.path.join(tmp, "X_pool.npy"), X_pool)
         X_pool_mmap = np.load(os.path.join(tmp, "X_pool.npy"), mmap_mode="r")
