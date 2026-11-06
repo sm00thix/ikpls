@@ -244,7 +244,7 @@ if __name__ == "__main__":
         t0 = time.perf_counter()
         np.save(os.path.join(tmp, "X_pool.npy"), X_pool)
         X_pool_mmap = np.load(os.path.join(tmp, "X_pool.npy"), mmap_mode="r")
-        run_local_pls(X_pool_mmap, np.arange(N_CHUNKS))  # Starts the workers.
+        run_local_pls(X_pool_mmap, np.arange(N_CHUNKS) % N_POOL)  # Starts the workers.
         startup_time = time.perf_counter() - t0
         t0 = time.perf_counter()
         local_pred, local_A = run_local_pls(X_pool_mmap, np.arange(N_POOL))
